@@ -3,7 +3,8 @@
 // - 顶部 Tab:"策略对话"(默认,两栏:左 ChatPanel + 右 ValidatePanel)| "多策略竞技场"(ArenaPanel)
 //   | "策略工坊"(StudioPanel,手动模式:自写代码、自选回测与分析);
 //   无路由库,useState 切换;三个 Tab 都保持挂载(仅切换可见性),来回切换不丢对话/编辑状态;
-// - 跨栏联动:左栏生成代码可"送入校验台"(seed 自增触发右栏填充);
+// - 跨栏联动:左栏生成代码可"送入校验台"(seed 自增触发右栏填充),
+//   也可"送入策略工坊编辑"(studioSeed 自增触发工坊编辑器填充并切到工坊 Tab);
 // - 全局 toast:fetch 错误统一中文提示(6.5s 自动消失,点击可关闭)。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Header from './components/Header.jsx';
@@ -30,6 +31,8 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   // 左栏 → 右栏的代码投递:{code, n}(n 自增触发右栏 useEffect)
   const [seed, setSeed] = useState({ code: '', n: 0 });
+  // 左栏 → 工坊 Tab 的代码投递:{code, n}(n 自增触发 StudioPanel 填充编辑器)
+  const [studioSeed, setStudioSeed] = useState({ code: '', n: 0 });
   // 顶部 Tab:'chat'(默认)| 'arena'
   const [tab, setTab] = useState('chat');
   const idRef = useRef(1);
@@ -52,6 +55,13 @@ export default function App() {
   const sendToValidator = useCallback((code) => {
     setSeed((s) => ({ code, n: s.n + 1 }));
     notify('info', '已把生成代码送入右侧校验台。');
+  }, [notify]);
+
+  // 左栏"送入策略工坊编辑"回调:写入 studioSeed 并切到工坊 Tab(工坊常驻挂载,状态不丢)
+  const sendToStudio = useCallback((code) => {
+    setStudioSeed((s) => ({ code, n: s.n + 1 }));
+    setTab('studio');
+    notify('info', '已把生成代码送入策略工坊编辑器,可继续修改 / 回测 / AI 优化。');
   }, [notify]);
 
   // 健康检查:挂载即查 + 每 30 秒轮询(短超时,快速判定在线/离线)
@@ -96,7 +106,7 @@ export default function App() {
 
       {/* Tab 一:两栏对话页(默认)。竞技场 Tab 下隐藏但保持挂载,状态不丢。 */}
       <main className={`layout ${tab === 'chat' ? '' : 'layout-hidden'}`}>
-        <ChatPanel notify={notify} onSeedValidate={sendToValidator} />
+        <ChatPanel notify={notify} onSeedValidate={sendToValidator} onSeedStudio={sendToStudio} />
         <ValidatePanel notify={notify} seed={seed} />
       </main>
 
@@ -107,7 +117,7 @@ export default function App() {
 
       {/* Tab 三:策略工坊(手动模式;隐藏但保持挂载,编辑器/草稿/结果不丢) */}
       <section className={`studio-layout ${tab === 'studio' ? '' : 'layout-hidden'}`}>
-        <StudioPanel notify={notify} />
+        <StudioPanel notify={notify} studioSeed={studioSeed} />
       </section>
 
       {/* 全局 toast 层 */}

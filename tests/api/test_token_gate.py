@@ -141,6 +141,7 @@ class TestMultiTokenScopes:
             ("/api/chat", {"text": "写一个双均线策略", "start": START, "end": END}),
             ("/api/arena", {"candidates": [{"name": "A", "code": GOOD_CODE}],
                              "start": START, "end": END}),
+            ("/api/optimize", {"code": GOOD_CODE, "start": START, "end": END}),
         ):
             resp = gated.post(path, json=payload, headers={"X-MCP-Token": READONLY_TOKEN})
             assert resp.status_code == 403, path
@@ -168,6 +169,11 @@ class TestMultiTokenScopes:
             headers=headers,
         )
         assert resp.status_code == 200
+        resp = gated.post(
+            "/api/optimize", json={"code": GOOD_CODE, "start": START, "end": END}, headers=headers
+        )
+        assert resp.status_code == 200
+        assert resp.json()["improved"] is False  # stub 指标恒定,不会严格超越基准
 
     def test_invalid_token_gets_401(self, gated):
         resp = gated.post(
@@ -347,6 +353,7 @@ class TestScopeRuleTable:
     def test_scope_routes_table_contents(self):
         # /api/kline(K 线行情,GET 只读)登记进 readonly;readwrite 恒为全量端点
         # /api/verify(分层验证)登记进 readwrite(会触发回测,非只读)
+        # /api/optimize(AI 自动优化闭环)登记进 readwrite(触发 LLM 与回测,非只读)
         assert set(SCOPE_ROUTES["readonly"]) == {"/api/validate", "/api/health", "/api/kline"}
         assert set(SCOPE_ROUTES["readwrite"]) == {
             "/api/validate",
@@ -356,6 +363,7 @@ class TestScopeRuleTable:
             "/api/arena",
             "/api/kline",
             "/api/verify",
+            "/api/optimize",
         }
 
     def test_scope_allows_matrix(self):

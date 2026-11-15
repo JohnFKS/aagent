@@ -2,10 +2,13 @@
 // 全程不依赖 LLM。对应需求:"项目并不是全 agent 的,用户也可以自己编辑策略代码
 // 然后自行选择如何回测如何分析"。
 // - 代码编辑器(CodeEditor,自实现行号 + Tab 缩进) + 三套起步模板(可过校验、可成交);
+//   接收对话栏"送入策略工坊编辑"的跨 Tab seed(studioSeed 自增触发填充,seed 优先于草稿);
 // - 本地策略库:localStorage `aquant_studio_strategies`([{name, code, ts}]),
 //   保存(命名)/载入/删除/导出 .py;编辑草稿自动存 `aquant_studio_draft`,刷新恢复;
 // - 回测设置:起止日期 + 初始资金;高级折叠区(保守参数覆盖 → overrides,
 //   留空 = 平台默认,激进值由后端 422 拦截并展示 findings);
+// - AI 自动优化区(OptimizePanel → POST /api/optimize):对当前编辑器代码一键发起
+//   "根据回测结果自动调整超参数/代码/逻辑"的优化,展示演进史并可一键采用最优版本;
 // - 分析方式自选(至少一项):基础回测(必选)/ 分层验证(/api/verify)/ K 线行情;
 // - 提交按勾选项顺序执行,loading 分步展示;422 拦截条 + findings、400 bundle 指引、
 //   超时友好提示。顶部说明条强调:所有回测仍经四层校验(保守参数强制)。
@@ -18,6 +21,7 @@ import KlineChart from './KlineChart.jsx';
 import FindingsList from './FindingsList.jsx';
 import CodeBlock from './CodeBlock.jsx';
 import VerifyResult from './VerifyResult.jsx';
+import OptimizePanel from './OptimizePanel.jsx';
 
 // localStorage 键:本地策略库(数组)/ 编辑草稿(纯文本)
 const LS_LIBRARY = 'aquant_studio_strategies';
@@ -76,7 +80,7 @@ function fmtTs(ts) {
   }
 }
 
-export default function StudioPanel({ notify }) {
+export default function StudioPanel({ notify, studioSeed }) {
   // ---- 编辑器与草稿 ----
   // 首次进入:恢复上次编辑草稿;无草稿时载入默认模板(双均线,最直观)
   const [code, setCode] = useState(() => {
@@ -102,6 +106,18 @@ export default function StudioPanel({ notify }) {
     return () => clearTimeout(timer);
   }, [code]);
 
+  // 接收对话栏"送入策略工坊编辑"(App.jsx 跨 Tab seed):seed 到达时填入编辑器。
+  // seed 优先于草稿;覆盖非空且不同的内容前先确认,与模板/本地策略载入同口径。
+  useEffect(() => {
+    const s = studioSeed;
+    if (!s || !s.n || !s.code) return;
+    if (code.trim() && code !== s.code && !window.confirm('送入的生成代码将覆盖当前编辑器内容,是否继续?')) {
+      return;
+    }
+    setCode(s.code);
+    notify('success', '已把对话生成的代码填入策略工坊编辑器(草稿已同步)。');
+  }, [studioSeed?.n]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ---- 本地策略库 ----
   const [library, setLibrary] = useState(loadLibrary);
   const [saveName, setSaveName] = useState('');
@@ -121,6 +137,8 @@ export default function StudioPanel({ notify }) {
   // ---- 执行状态 ----
   const [phase, setPhase] = useState(''); // '' | 'basic' | 'verify' | 'kline'
   const [error, setError] = useState(''); // 网络 / HTTP 层错误条
+  // AI 优化进行中(OptimizePanel 反向通知):与主分析双向互斥,避免两个长任务并发
+  const [optBusy, setOptBusy] = useState(false);
 
   // ---- 结果 ----
   const [btRes, setBtRes] = useState(null); // {kind:'ok'|'rejected'|'error', ...}
@@ -135,6 +153,8 @@ export default function StudioPanel({ notify }) {
   const [klineError, setKlineError] = useState('');
 
   const running = phase !== '';
+  // 任一长任务(主分析 / AI 优化)进行中即视为忙碌
+  const busy = running || optBusy;
   // 代码中可自动识别的标的(每次渲染实时计算,用于决定是否显示手动输入框)
   const autoOid = useMemo(() => extractOid(code), [code]);
 
@@ -222,6 +242,13 @@ export default function StudioPanel({ notify }) {
     return Object.keys(sim).length > 0 ? { sys_simulation: sim } : null;
   }
 
+  // ---- 采用 AI 优化最优版本:写入编辑器(草稿自动同步)----
+  function adoptBest(nextCode) {
+    if (typeof nextCode !== 'string' || !nextCode.trim()) return;
+    setCode(nextCode);
+    notify('success', '已采用 AI 优化的最优版本,写入编辑器(草稿已同步)。');
+  }
+
   // ---- K 线拉取(手动模式:/api/kline 直接查真实价日线)----
   async function fetchKline(oid) {
     setKlineLoading(true);
@@ -251,6 +278,11 @@ export default function StudioPanel({ notify }) {
 
   // ---- 执行所选分析(按勾选项顺序;基础回测被拦/失败即短路)----
   async function runAnalyses() {
+    // 与 AI 优化互斥:优化进行中不接受新任务(含编辑器 Ctrl/Cmd+Enter 快捷入口)
+    if (optBusy) {
+      setError('AI 自动优化进行中,请等待其完成后再执行所选分析。');
+      return;
+    }
     // 前端预检(与后端校验互补:格式类错误就地拦截)
     if (!code.trim()) {
       setError('请先编写或载入策略代码(可从模板下拉起步)。');
@@ -438,7 +470,7 @@ export default function StudioPanel({ notify }) {
               type="button"
               className="btn btn-ghost"
               onClick={clearAll}
-              disabled={running}
+              disabled={busy}
               title="清空编辑器与本次结果(不影响本地策略库)"
             >
               清空
@@ -459,7 +491,7 @@ export default function StudioPanel({ notify }) {
               className="studio-select"
               value={templateKey}
               onChange={onTemplateSelect}
-              disabled={running}
+              disabled={busy}
               title="载入起步代码:空白模板 / 双均线择时 / RSI 超卖"
             >
               <option value="">载入模板…</option>
@@ -474,7 +506,7 @@ export default function StudioPanel({ notify }) {
             className="studio-save-input"
             placeholder="策略名(保存到本地库)"
             value={saveName}
-            disabled={running}
+            disabled={busy}
             onChange={(e) => setSaveName(e.target.value)}
             aria-label="策略名"
           />
@@ -482,7 +514,7 @@ export default function StudioPanel({ notify }) {
             type="button"
             className="btn btn-ghost"
             onClick={saveStrategy}
-            disabled={running}
+            disabled={busy}
             title="把当前代码按策略名保存到浏览器本地策略库(同名覆盖)"
           >
             保存
@@ -523,7 +555,7 @@ export default function StudioPanel({ notify }) {
                       type="button"
                       className="btn btn-ghost"
                       onClick={() => loadStrategy(item)}
-                      disabled={running}
+                      disabled={busy}
                       title="载入到编辑器(覆盖前会确认)"
                     >
                       载入
@@ -532,7 +564,7 @@ export default function StudioPanel({ notify }) {
                       type="button"
                       className="btn btn-ghost"
                       onClick={() => exportStrategy(item)}
-                      disabled={running}
+                      disabled={busy}
                       title={`导出 ${sanitizeFilename(item.name)}.py 下载`}
                     >
                       导出 .py
@@ -541,7 +573,7 @@ export default function StudioPanel({ notify }) {
                       type="button"
                       className="btn btn-ghost studio-lib-del"
                       onClick={() => deleteStrategy(item.name)}
-                      disabled={running}
+                      disabled={busy}
                       title="从本地策略库删除"
                     >
                       删除
@@ -562,7 +594,7 @@ export default function StudioPanel({ notify }) {
               <input
                 type="date"
                 value={start}
-                disabled={running}
+                disabled={busy}
                 onChange={(e) => setStart(e.target.value)}
               />
             </label>
@@ -571,7 +603,7 @@ export default function StudioPanel({ notify }) {
               <input
                 type="date"
                 value={end}
-                disabled={running}
+                disabled={busy}
                 onChange={(e) => setEnd(e.target.value)}
               />
             </label>
@@ -583,7 +615,7 @@ export default function StudioPanel({ notify }) {
                 min="1"
                 step="10000"
                 value={cash}
-                disabled={running}
+                disabled={busy}
                 onChange={(e) => setCash(e.target.value)}
                 aria-label="初始资金"
               />
@@ -614,7 +646,7 @@ export default function StudioPanel({ notify }) {
                     min="0"
                     placeholder="平台默认 0.002"
                     value={slippage}
-                    disabled={running}
+                    disabled={busy}
                     onChange={(e) => setSlippage(e.target.value)}
                     aria-label="滑点"
                   />
@@ -628,7 +660,7 @@ export default function StudioPanel({ notify }) {
                     min="0"
                     placeholder="平台默认(≤0.2)"
                     value={volumePercent}
-                    disabled={running}
+                    disabled={busy}
                     onChange={(e) => setVolumePercent(e.target.value)}
                     aria-label="成交量占比"
                   />
@@ -643,6 +675,20 @@ export default function StudioPanel({ notify }) {
           )}
         </div>
 
+        {/* AI 自动优化区:基于当前编辑器代码一键发起(优化器自带基线,无需先执行回测);
+            与主分析双向互斥(优化中禁用"执行所选分析",反之亦然) */}
+        <OptimizePanel
+          code={code}
+          start={start}
+          end={end}
+          cash={cash}
+          overrides={buildOverrides()}
+          disabled={running}
+          onBusyChange={setOptBusy}
+          onAdopt={adoptBest}
+          notify={notify}
+        />
+
         {/* 分析方式自选 */}
         <div className="studio-analyses">
           <div className="studio-settings-title">分析方式(提交时执行勾选项,至少一项)</div>
@@ -655,7 +701,7 @@ export default function StudioPanel({ notify }) {
               <input
                 type="checkbox"
                 checked={doVerify}
-                disabled={running}
+                disabled={busy}
                 onChange={(e) => setDoVerify(e.target.checked)}
               />
               分层验证(Layer 4,较慢:两次回测)
@@ -664,7 +710,7 @@ export default function StudioPanel({ notify }) {
               <input
                 type="checkbox"
                 checked={doKline}
-                disabled={running}
+                disabled={busy}
                 onChange={(e) => setDoKline(e.target.checked)}
               />
               K 线行情(/api/kline)
@@ -678,7 +724,7 @@ export default function StudioPanel({ notify }) {
             type="button"
             className="btn btn-primary"
             onClick={runAnalyses}
-            disabled={running}
+            disabled={busy}
             title="按勾选顺序执行:基础回测 → 分层验证 → K 线"
           >
             {running ? (
@@ -758,7 +804,7 @@ export default function StudioPanel({ notify }) {
               onChange={(e) => setKlineDraft(e.target.value)}
               aria-label="K 线标的代码"
             />
-            <button type="submit" className="btn btn-ghost" disabled={klineLoading || running}>
+            <button type="submit" className="btn btn-ghost" disabled={klineLoading || busy}>
               加载 K 线
             </button>
           </form>

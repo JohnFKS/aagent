@@ -24,7 +24,7 @@ function extractOid(code) {
   return m ? m[0] : '';
 }
 
-export default function ChatPanel({ notify, onSeedValidate }) {
+export default function ChatPanel({ notify, onSeedValidate, onSeedStudio }) {
   const [text, setText] = useState('');
   const [start, setStart] = useState(DEFAULT_START);
   const [end, setEnd] = useState(DEFAULT_END);
@@ -349,6 +349,14 @@ export default function ChatPanel({ notify, onSeedValidate }) {
                   onClick={() => onSeedValidate(result.code)}
                 >
                   送入校验台 →
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => onSeedStudio(result.code)}
+                  title="切到「策略工坊」Tab 并把生成代码填入其编辑器(可继续手动修改 / 回测 / AI 优化)"
+                >
+                  送入策略工坊编辑 →
                 </button>
               </div>
             </div>

@@ -111,6 +111,10 @@ export const api = {
   // POST /api/arena {candidates(1~6),start,end,cash?} → 多策略竞技场排名
   // (候选数 × 回测耗时,真实 bundle 回测较慢,超时放宽到 600s)
   arena: (payload) => request('/api/arena', { method: 'POST', body: payload, timeout: 600000 }),
+  // POST /api/optimize {code,start,end,rounds?(1~5,默认2),cash?,overrides?} →
+  // AI 自动优化:先跑基线回测,再循环"LLM 分析 → 改写 → 回测对照"N 轮,返回最优版本与演进史。
+  // 每轮 ≈ 1 次 LLM 生成(30~120s)+ 2 次回测;rounds=2 常见 2~5 分钟 → 超时放宽到 900s。
+  optimize: (payload) => request('/api/optimize', { method: 'POST', body: payload, timeout: 900000 }),
   // GET /api/kline?oid=&start=&end= → K 线行情(真实价日线,最多 500 根,超出后端抽样)
   // GET + query 参数;oid 必填,start/end('YYYY-MM-DD')可选,缺省 120s 超时
   kline: ({ oid, start, end } = {}) => {

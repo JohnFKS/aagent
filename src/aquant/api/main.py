@@ -412,6 +412,94 @@ def verify(req: VerifyRequest) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# AI 自动优化闭环(用户需求:"agent 可以根据代码以及回测结果自动调整策略,
+# 包括但不限于超参数、策略代码和策略逻辑,从而达到更好的效果"):POST /api/optimize
+# 用户传入已就绪策略代码,StrategyOptimizerAgent 按轮次执行"回测 → 诊断 →
+# LLM 改码 → 校验(重试)→ 回测(自愈)→ 对比保留",返回 baseline/best/轮次历史。
+# 轮内失败(LLM/校验/执行)不抛:记入 rounds[].error 继续下一轮,早停由 agent 控制。
+# 注意:必须注册在前端静态托管(_mount_frontend 的 SPA catch-all)之前,
+# 路由按注册顺序匹配,否则 /api/optimize 会被 index.html fallback 遮蔽。
+from aquant.agents.optimizer import StrategyOptimizerAgent
+from aquant.validation.validator import validate_strategy
+
+
+class OptimizeRequest(BaseModel):
+    """/api/optimize 请求体:已就绪策略代码 + 回测区间 + 轮次预算。"""
+
+    code: str = Field(min_length=1, description="待优化的 RQAlpha 策略源码")
+    start: str = Field(description="回测起始日 YYYY-MM-DD")
+    end: str = Field(description="回测结束日 YYYY-MM-DD")
+    rounds: int = Field(
+        default=2, ge=1, le=5,
+        description="优化轮次预算(1~5,默认 2);连续 2 轮无改进自动早停",
+    )
+    cash: float | None = Field(default=None, description="初始资金,缺省用平台默认")
+    overrides: dict | None = Field(
+        default=None,
+        description=(
+            "用户自选回测参数覆盖(dict[str, dict]):更保守的值放行,"
+            "激进值(如零滑点)被 Layer 1 校验拒绝(422)"
+        ),
+    )
+
+
+@app.post("/api/optimize", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def optimize(req: OptimizeRequest, request: Request) -> dict[str, Any]:
+    """AI 自动优化闭环:回测-诊断-LLM 改码-对比保留,200 返回 OptimizationResult。
+
+    耗时预期:每轮 = 1 次 LLM 生成(约 30~120s)+ 2 次回测(每次数秒);
+    rounds 上限 5,整体响应可能需要数分钟,调用方请设置足够长的读超时。
+    错误语义与既有端点对齐:
+    - 传入代码含 ERROR(validate_strategy 与 editor 同款代码级校验)→ 422 + verdict;
+    - 数据 bundle 缺失(FileNotFoundError)→ 400 + BUNDLE_GUIDANCE 构建指引;
+    - LLM 服务不可用(LLMAPIError 逃逸时兜底)→ 502 + 中文指引。
+    经验库:与 /api/chat 同款 app.state 惰性单例,优化结束 record 最终 best。
+    """
+    verdict = validate_strategy(req.code)
+    if verdict.has_error:
+        payload = verdict.to_dict()
+        payload["summary"] = ValidationAgent().summarize(verdict)
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "策略校验未通过,拒绝进入优化。", "verdict": payload},
+        )
+    runner = _get_runner(request)
+    if isinstance(runner, RealRunnerAdapter):
+        # 真实适配器在执行时从 default_bundle_path() 解析 bundle;缺失属于用户可
+        # 修复的环境问题,预检直接给 400 + 指引(与 /api/arena 同型)
+        bundle_path = default_bundle_path()
+        if not bundle_path.exists():
+            return JSONResponse(
+                status_code=400,
+                content={"detail": BUNDLE_GUIDANCE, "reason": f"数据 bundle 不存在:{bundle_path}"},
+            )
+    store = getattr(request.app.state, "experience", None)
+    if store is None:
+        from aquant.agents.experience import ExperienceStore
+
+        store = ExperienceStore()
+        request.app.state.experience = store
+    agent = StrategyOptimizerAgent(_get_llm(request), validate_strategy)
+    try:
+        return agent.optimize(
+            req.code,
+            req.start,
+            req.end,
+            runner=runner,
+            rounds=req.rounds,
+            cash=req.cash,
+            mod_overrides=req.overrides,
+            experience=store,
+        )
+    except FileNotFoundError as exc:
+        # bundle 缺失属于用户可修复的环境问题,400 + 指引而非 500
+        return JSONResponse(status_code=400, content={"detail": BUNDLE_GUIDANCE, "reason": str(exc)})
+    except LLMAPIError as exc:
+        # LLM 网络故障(超时/断连/限流)是外部依赖问题,502 + 中文指引而非 500
+        return JSONResponse(status_code=502, content={"detail": "LLM 服务暂时不可用,请稍后重试。", "reason": str(exc)})
+
+
 # ---- 前端静态托管(单容器部署模式,来源:tick-stock-panel 调研结论)-----------
 # frontend/dist 由 Vite 构建产出;存在时 FastAPI 直接托管,/api/* 路由优先于
 # SPA fallback。dist 不存在时 API 独立运行(纯后端模式)。
