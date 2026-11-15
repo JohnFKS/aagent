@@ -1,7 +1,8 @@
 // 应用根组件:
 // - 顶栏(平台名 / 版本号 / 后端状态灯,来自 GET /api/health,30s 轮询);
-// - 顶部 Tab:"策略对话"(默认,两栏:左 ChatPanel + 右 ValidatePanel)| "多策略竞技场"(ArenaPanel);
-//   无路由库,useState 切换;两个 Tab 都保持挂载(仅切换可见性),来回切换不丢对话/编辑状态;
+// - 顶部 Tab:"策略对话"(默认,两栏:左 ChatPanel + 右 ValidatePanel)| "多策略竞技场"(ArenaPanel)
+//   | "策略工坊"(StudioPanel,手动模式:自写代码、自选回测与分析);
+//   无路由库,useState 切换;三个 Tab 都保持挂载(仅切换可见性),来回切换不丢对话/编辑状态;
 // - 跨栏联动:左栏生成代码可"送入校验台"(seed 自增触发右栏填充);
 // - 全局 toast:fetch 错误统一中文提示(6.5s 自动消失,点击可关闭)。
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -9,6 +10,7 @@ import Header from './components/Header.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import ValidatePanel from './components/ValidatePanel.jsx';
 import ArenaPanel from './components/ArenaPanel.jsx';
+import StudioPanel from './components/StudioPanel.jsx';
 import { api } from './api.js';
 
 // toast 图标按类型区分
@@ -18,6 +20,7 @@ const TOAST_ICON = { error: '✗', success: '✓', warn: '⚠', info: 'ℹ' };
 const TABS = [
   { key: 'chat', label: '策略对话', hint: '对话生成策略 + 校验台' },
   { key: 'arena', label: '多策略竞技场', hint: '多候选同场回测排名' },
+  { key: 'studio', label: '策略工坊', hint: '手动模式:自写代码、自选回测与分析' },
 ];
 
 export default function App() {
@@ -100,6 +103,11 @@ export default function App() {
       {/* Tab 二:多策略竞技场(对话 Tab 下隐藏但保持挂载,后台回测结果不丢) */}
       <section className={`arena-layout ${tab === 'arena' ? '' : 'layout-hidden'}`}>
         <ArenaPanel notify={notify} />
+      </section>
+
+      {/* Tab 三:策略工坊(手动模式;隐藏但保持挂载,编辑器/草稿/结果不丢) */}
+      <section className={`studio-layout ${tab === 'studio' ? '' : 'layout-hidden'}`}>
+        <StudioPanel notify={notify} />
       </section>
 
       {/* 全局 toast 层 */}

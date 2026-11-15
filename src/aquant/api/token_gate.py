@@ -66,6 +66,7 @@ SCOPE_ROUTES: dict[str, tuple[str, ...]] = {
         "/api/chat",
         "/api/arena",
         "/api/kline",
+        "/api/verify",
     ),
 }
 

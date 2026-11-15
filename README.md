@@ -139,6 +139,30 @@ python -m pytest tests/
 - "载入示例"→"开赛"→ 并行回测 → 排名表(年化+夏普降序,榜首高亮)+
   每候选状态徽章(✓ 已入榜 / ✗ 校验拦截 / ⚠ 执行失败,可展开详情)
 
+**Tab 3 · 策略工坊(手动模式)**
+- 平台不是全 Agent 的——**你可以自己写策略代码、自己选回测与分析方式**:
+  - 代码编辑器(行号、Tab 缩进、Ctrl/Cmd+Enter 快捷执行),模板:空白骨架 /
+    双均线择时 / RSI 超卖(规范 ndarray 写法);
+  - 本地策略库(localStorage):保存/载入/删除/导出 .py,草稿自动恢复;
+  - **回测方式自选**:日期区间、初始资金,高级选项可自选更保守的滑点与
+    成交量占比(平台默认即保守值;激进值由 Layer 1 拒绝);
+  - **分析方式自选**(勾选执行):基础回测(必选)/ 分层验证(Layer 4:
+    IS→OOS 对照 + 随机基准 + 模拟盘清单)/ K 线行情(自动从代码提取标的);
+  - 手动模式与 Agent 模式殊途同归:**所有代码都过同一套四层校验**。
+
+## 分层验证 API
+
+```bash
+curl -s -X POST localhost:8000/api/verify -H 'content-type: application/json' -d '{
+  "code": "...", "start": "2022-01-04", "end": "2024-12-31",
+  "is_ratio": 0.7, "overrides": {"sys_simulation": {"slippage": 0.005}}
+}'
+# → status(pass/warning/fail) + IS/OOS 指标 + checks 判定 + 随机基准 + 模拟盘清单 + report 全文
+```
+
+`/api/backtest` 与 `/api/verify` 均接受可选 `overrides`(更保守值生效,
+激进值 422 拒绝——保守参数防线对手动模式同样生效)。
+
 ## 方式二:CLI 命令行
 
 ```bash

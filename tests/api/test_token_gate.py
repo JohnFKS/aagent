@@ -346,6 +346,7 @@ class TestConfigPriorityAndErrors:
 class TestScopeRuleTable:
     def test_scope_routes_table_contents(self):
         # /api/kline(K 线行情,GET 只读)登记进 readonly;readwrite 恒为全量端点
+        # /api/verify(分层验证)登记进 readwrite(会触发回测,非只读)
         assert set(SCOPE_ROUTES["readonly"]) == {"/api/validate", "/api/health", "/api/kline"}
         assert set(SCOPE_ROUTES["readwrite"]) == {
             "/api/validate",
@@ -354,6 +355,7 @@ class TestScopeRuleTable:
             "/api/chat",
             "/api/arena",
             "/api/kline",
+            "/api/verify",
         }
 
     def test_scope_allows_matrix(self):

@@ -99,6 +99,14 @@ class BacktestRequest(BaseModel):
     start: str = Field(description="回测起始日 YYYY-MM-DD")
     end: str = Field(description="回测结束日 YYYY-MM-DD")
     cash: float | None = Field(default=None, description="初始资金,缺省用平台默认")
+    overrides: dict | None = Field(
+        default=None,
+        description=(
+            "用户自选回测参数覆盖(dict[str, dict],形如 "
+            '{"sys_simulation": {"slippage": 0.005}}):'
+            "更保守的值放行,激进值(如零滑点)被 Layer 1 校验拒绝(422)"
+        ),
+    )
 
 
 @app.get("/api/health")
@@ -153,11 +161,21 @@ def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
 
 @app.post("/api/backtest", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
 def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
-    """直接回测已就绪的策略代码:Layer 1 校验是硬门禁,不过即 422;bundle 缺失 400。"""
-    run_config = build_run_config(req.start, req.end, cash=req.cash)
+    """直接回测已就绪的策略代码:Layer 1 校验是硬门禁,不过即 422;bundle 缺失 400。
+
+    手动模式(用户自选参数):可选 overrides 原样并入 run 配置交给既有 Layer 1
+    把关——更保守的值(如更高滑点)放行,激进值(如零滑点)422 拒绝,零新逻辑。
+    """
+    # 校验配置:overrides 并入后交 Layer 1 lint(激进值在此被拦)
+    run_config = build_run_config(
+        req.start, req.end, cash=req.cash, user_mod_overrides=req.overrides
+    )
     agent = BacktestAgent(runner=_get_runner(request))
     try:
-        outcome = agent.execute(req.code, req.start, req.end, run_config=run_config)
+        # 执行配置:overrides 提供时经 runner 透传给 run_backtest(mod_overrides);
+        # 未提供时不附加 kw,与既有调用完全一致
+        exec_kw: dict[str, Any] = {"mod_overrides": req.overrides} if req.overrides else {}
+        outcome = agent.execute(req.code, req.start, req.end, run_config=run_config, **exec_kw)
     except FileNotFoundError as exc:
         return JSONResponse(status_code=400, content={"detail": BUNDLE_GUIDANCE, "reason": str(exc)})
     verdict: Verdict = outcome["verdict"]
@@ -295,6 +313,103 @@ def kline(
     except KlineError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     return {"oid": oid_val, "start": start, "end": end, "candles": candles}
+
+
+# ---------------------------------------------------------------------------
+# 手动模式:分层验证(docs/design.md Layer 4 的端点化,与 CLI `aquant verify`
+# 同管线)——用户自备策略代码、自选样本内/样本外切分与回测参数,平台直接执行
+# aquant.verify.pipeline.layered_verification(IS→OOS 两次回测 + 随机基准对照
+# + 对比判定 + 模拟盘引导清单)。与 /api/chat 的"生成-校验-回测-复盘"自动编排
+# 互补:这里不做任何生成,策略代码原样进管线;激进参数同样由 Layer 1 校验拒绝。
+# 注意:必须注册在前端静态托管(_mount_frontend 的 SPA catch-all)之前,
+# 路由按注册顺序匹配,否则 /api/verify 会被 index.html fallback 遮蔽。
+
+class VerifyRequest(BaseModel):
+    """/api/verify 请求体:用户自备策略代码 + 分层验证区间与可选参数。"""
+
+    code: str = Field(min_length=1, description="RQAlpha 策略源码")
+    start: str = Field(description="回测起始日 YYYY-MM-DD")
+    end: str = Field(description="回测结束日 YYYY-MM-DD")
+    is_ratio: float = Field(
+        default=0.7, ge=0.5, le=0.9, description="样本内占比,限 0.5~0.9,越界 422"
+    )
+    cash: float | None = Field(default=None, description="初始资金,缺省用平台默认")
+    benchmark: str | None = Field(
+        default=None, description="基准指数 order_book_id(如 000300.XSHG),缺省不做基准对照"
+    )
+    overrides: dict | None = Field(
+        default=None,
+        description=(
+            "用户自选回测参数覆盖(dict[str, dict]):更保守的值放行,"
+            "激进值(如零滑点)被 Layer 1 校验拒绝(422)"
+        ),
+    )
+
+
+@app.post("/api/verify", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def verify(req: VerifyRequest) -> dict[str, Any]:
+    """分层验证:样本内/样本外两次回测 + 随机基准对照 + 对比判定 + 模拟盘清单。
+
+    与 CLI ``aquant verify`` 同管线(aquant.verify.pipeline.layered_verification)。
+    错误语义与既有端点对齐:
+    - 策略/参数校验未通过(StrategyValidationError)→ 422 + verdict dict
+      (由模块级 runner 异常映射统一处理,与 /api/backtest 同语义);
+    - 数据 bundle 缺失(FileNotFoundError)→ 400 + BUNDLE_GUIDANCE 构建指引;
+    - 区间不足 40 个交易日等参数问题(ValueError)→ 400 中文提示;
+    - 回测执行失败(BacktestExecutionError)→ 500 + 中文 reason(服务端问题)。
+    """
+    bundle_path = default_bundle_path()
+    if not bundle_path.exists():
+        # 与 /api/arena 同型的预检:bundle 缺失属于用户可修复的环境问题,
+        # 400 + 构建指引,而不是 500
+        return JSONResponse(
+            status_code=400,
+            content={"detail": BUNDLE_GUIDANCE, "reason": f"数据 bundle 不存在:{bundle_path}"},
+        )
+    # 延迟导入:verify 管线(进而 runner/pandas 相关)依赖不可用时保持 API 可
+    # 加载,与 _register_runner_exception_handler 的降级策略一致
+    from aquant.runner.backtest import BacktestExecutionError
+    from aquant.verify.pipeline import layered_verification
+
+    try:
+        lv = layered_verification(
+            req.code,
+            req.start,
+            req.end,
+            bundle_path=bundle_path,
+            is_ratio=req.is_ratio,
+            cash=req.cash,
+            benchmark=req.benchmark,
+            mod_overrides=req.overrides,
+        )
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=400, content={"detail": BUNDLE_GUIDANCE, "reason": str(exc)})
+    except BacktestExecutionError as exc:
+        # 单次回测子进程失败是服务端执行问题:500 + 中文 reason(简单直接)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "分层验证中的回测执行失败,请稍后重试或查看服务端日志。",
+                "reason": str(exc),
+            },
+        )
+    except ValueError as exc:
+        # 区间 <40 个交易日等参数问题:用户可修复 → 400
+        return JSONResponse(status_code=400, content={"detail": f"分层验证参数无法执行:{exc}"})
+    comparison = lv.comparison
+    return {
+        "status": comparison["status"],
+        "comparison": comparison,
+        "is_metrics": comparison["is_metrics"],
+        "oos_metrics": comparison["oos_metrics"],
+        "checks": comparison["checks"],
+        "report": lv.to_report(),
+        "random_baseline_returns": lv.random_baseline_returns,
+        "paper_checklist": lv.paper_checklist,
+        "is_split": lv.is_split,
+        "start": lv.start,
+        "end": lv.end,
+    }
 
 
 # ---- 前端静态托管(单容器部署模式,来源:tick-stock-panel 调研结论)-----------

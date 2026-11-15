@@ -39,8 +39,8 @@ const EXTRA_CARDS = [
   { key: 'elapsed_seconds', label: '耗时', kind: 'sec' },
 ];
 
-// 数值格式化:缺失/非法 → '—'
-function formatValue(kind, v) {
+// 数值格式化:缺失/非法 → '—'(导出供 VerifyResult 的 IS/OOS 对照表复用,口径一致)
+export function formatValue(kind, v) {
   if (v === undefined || v === null || v === '') return '—';
   const n = Number(v);
   if (Number.isNaN(n)) return String(v);

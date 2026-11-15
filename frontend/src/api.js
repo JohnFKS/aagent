@@ -102,8 +102,12 @@ export const api = {
   chat: (payload) => request('/api/chat', { method: 'POST', body: payload, timeout: 300000 }),  // 真实 LLM+自愈循环耗时更长
   // POST /api/validate {code,start?,end?} → Layer 1 校验结论 + 中文摘要
   validate: (payload) => request('/api/validate', { method: 'POST', body: payload }),
-  // POST /api/backtest {code,start,end,cash?} → 200 指标 / 422 拦截(verdict)
+  // POST /api/backtest {code,start,end,cash?,overrides?} → 200 指标 / 422 拦截(verdict)
   backtest: (payload) => request('/api/backtest', { method: 'POST', body: payload }),
+  // POST /api/verify {code,start,end,is_ratio?,cash?,benchmark?,overrides?} →
+  // 分层验证(Layer 4,样本内/样本外对照 + checks + 随机基准 + 模拟盘清单)。
+  // 内部要跑两次回测(约 5~20 秒),超时放宽到 300s。
+  verify: (payload) => request('/api/verify', { method: 'POST', body: payload, timeout: 300000 }),
   // POST /api/arena {candidates(1~6),start,end,cash?} → 多策略竞技场排名
   // (候选数 × 回测耗时,真实 bundle 回测较慢,超时放宽到 600s)
   arena: (payload) => request('/api/arena', { method: 'POST', body: payload, timeout: 600000 }),
