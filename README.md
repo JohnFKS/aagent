@@ -347,9 +347,9 @@ trades 为 DataFrame 等);其他版本不保证。
 
 ## 许可
 
-本仓库代码按 **MIT** 发布。依赖的 [RQAlpha](https://github.com/ricequant/rqalpha)
-采用 Apache 2.0(含商业用途附加条款),商用请自行确认米筐科技授权;
-数据来自 AKShare 公开接口,仅供研究。
+本仓库代码按仓库根目录 [LICENSE](LICENSE)(**Apache License 2.0**)发布。
+依赖的 [RQAlpha](https://github.com/ricequant/rqalpha) 同为 Apache 2.0(含商业用途
+附加条款),商用请自行确认米筐科技授权;数据来自 AKShare 公开接口,仅供研究。
 
 ---
 *由 ZCode 多 agent 协作构建(需求分析 → 三仓库调研 → 四层校验 TDD → 多 worker 并行
