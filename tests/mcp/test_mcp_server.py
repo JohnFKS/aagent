@@ -2,7 +2,7 @@
 
 两部分:
 1. tool 层 —— 用 httpx.MockTransport 替换 server 模块的 _TRANSPORT,
-   覆盖 3 个 tool 的:成功转发、非 2xx → 可读错误文本(不抛异常)、
+   覆盖 8 个 tool 的:成功转发、非 2xx → 可读错误文本(不抛异常)、
    X-MCP-Token 头存在性(AQUANT_MCP_TOKEN 单 token 优先,AQUANT_MCP_TOKENS
    多 token 时取第一个 readwrite token,都没有则不带头)。
 2. 后端闸门层 —— aquant.api.token_gate 的 X-MCP-Token dependency
@@ -287,6 +287,294 @@ class TestTokenHeader:
 
 
 # ---------------------------------------------------------------------------
+# tool:platform_optimize
+# ---------------------------------------------------------------------------
+class TestPlatformOptimize:
+    def test_success_forwarding_sends_full_payload(self, monkeypatch):
+        body = {
+            "improved": True,
+            "best": {"code": "improved-code", "summary": "夏普 1.1 → 1.6"},
+            "baseline": {"code": GOOD_CODE},
+            "rounds": [{"round": 1, "improved": True}],
+            "elapsed_seconds": 240.5,
+        }
+        recorder = _install_routes(
+            monkeypatch, {("POST", "/api/optimize"): (200, body)}
+        )
+        text = server.platform_optimize(
+            GOOD_CODE, START, END, rounds=3, cash=200000.0,
+            overrides={"mod": {"slippage": 0.002}},
+        )
+        parsed = _assert_json(text)
+        assert parsed["improved"] is True
+        assert parsed["best"]["code"] == "improved-code"
+        sent = json.loads(recorder.requests[0].content)
+        assert sent == {
+            "code": GOOD_CODE,
+            "start": START,
+            "end": END,
+            "rounds": 3,
+            "cash": 200000.0,
+            "overrides": {"mod": {"slippage": 0.002}},
+        }
+
+    def test_defaults_send_rounds_2_without_cash_overrides(self, monkeypatch):
+        recorder = _install_routes(
+            monkeypatch,
+            {("POST", "/api/optimize"): (200, {"improved": False, "best": {}})},
+        )
+        server.platform_optimize(GOOD_CODE, START, END)
+        sent = json.loads(recorder.requests[0].content)
+        assert sent == {"code": GOOD_CODE, "start": START, "end": END, "rounds": 2}
+
+    def test_read_timeout_at_least_900s(self, monkeypatch):
+        """optimize 每轮 = LLM 生成 + 两次回测(数分钟级),httpx 读超时必须 ≥900s。"""
+        recorder = _install_routes(
+            monkeypatch, {("POST", "/api/optimize"): (200, {"improved": False})}
+        )
+        server.platform_optimize(GOOD_CODE, START, END)
+        timeout = recorder.requests[0].extensions.get("timeout", {})
+        assert timeout.get("read", 0) >= 900
+
+    def test_422_rejected_includes_findings_not_exception(self, monkeypatch):
+        """校验拦截 422 + verdict → findings 摘要 + 指引,不抛异常。"""
+        body = {
+            "detail": "策略校验未通过,拒绝进入优化。",
+            "verdict": {
+                "passed": False,
+                "error_count": 1,
+                "warning_count": 0,
+                "findings": [{"rule": "ast.shift_negative", "message": "未来函数"}],
+            },
+        }
+        _install_routes(monkeypatch, {("POST", "/api/optimize"): (422, body)})
+        text = server.platform_optimize(BAD_CODE, START, END)
+        assert "422" in text
+        assert "ast.shift_negative" in text
+        assert "platform_validate_code" in text  # 指引先校验改码
+        assert "建议" in text
+
+    def test_400_bundle_guidance(self, monkeypatch):
+        body = {"detail": "回测数据 bundle 不存在,请先构建。", "reason": "no bundle"}
+        _install_routes(monkeypatch, {("POST", "/api/optimize"): (400, body)})
+        text = server.platform_optimize(GOOD_CODE, START, END)
+        assert "400" in text
+        assert "bundle" in text
+        assert "AQUANT_BUNDLE_PATH" in text
+
+    def test_502_llm_fault_hint(self, monkeypatch):
+        body = {"detail": "LLM 服务暂时不可用,请稍后重试。", "reason": "timeout"}
+        _install_routes(monkeypatch, {("POST", "/api/optimize"): (502, body)})
+        text = server.platform_optimize(GOOD_CODE, START, END)
+        assert "502" in text
+        assert "LLM" in text
+
+    def test_connect_error_returns_readable_text(self, monkeypatch):
+        _install_broken(monkeypatch, httpx.ConnectError("connection refused"))
+        text = server.platform_optimize(GOOD_CODE, START, END)  # 不抛异常
+        assert "无法连接" in text
+        assert "AQUANT_API_BASE" in text
+
+
+# ---------------------------------------------------------------------------
+# tool:platform_verify_layered
+# ---------------------------------------------------------------------------
+class TestPlatformVerifyLayered:
+    def test_success_forwarding_sends_payload(self, monkeypatch):
+        body = {
+            "status": "pass",
+            "comparison": {"status": "pass", "is_metrics": {}, "oos_metrics": {}},
+            "checks": {"oos_beats_random": True},
+            "report": "分层验证报告",
+            "random_baseline_returns": [0.01, -0.02],
+            "paper_checklist": ["小资金模拟盘 2 周"],
+        }
+        recorder = _install_routes(monkeypatch, {("POST", "/api/verify"): (200, body)})
+        text = server.platform_verify_layered(
+            GOOD_CODE, START, END, is_ratio=0.8,
+            overrides={"mod": {"slippage": 0.002}},
+        )
+        parsed = _assert_json(text)
+        assert parsed["status"] == "pass"
+        assert parsed["paper_checklist"] == ["小资金模拟盘 2 周"]
+        sent = json.loads(recorder.requests[0].content)
+        assert sent == {
+            "code": GOOD_CODE,
+            "start": START,
+            "end": END,
+            "is_ratio": 0.8,
+            "overrides": {"mod": {"slippage": 0.002}},
+        }
+
+    def test_default_is_ratio_07_without_overrides(self, monkeypatch):
+        recorder = _install_routes(
+            monkeypatch, {("POST", "/api/verify"): (200, {"status": "pass"})}
+        )
+        server.platform_verify_layered(GOOD_CODE, START, END)
+        sent = json.loads(recorder.requests[0].content)
+        assert sent == {"code": GOOD_CODE, "start": START, "end": END, "is_ratio": 0.7}
+
+    def test_422_rejected_includes_findings_not_exception(self, monkeypatch):
+        body = {
+            "detail": "策略校验未通过,拒绝执行分层验证。",
+            "verdict": {
+                "passed": False,
+                "error_count": 1,
+                "warning_count": 0,
+                "findings": [{"rule": "ast.shift_negative", "message": "未来函数"}],
+            },
+        }
+        _install_routes(monkeypatch, {("POST", "/api/verify"): (422, body)})
+        text = server.platform_verify_layered(BAD_CODE, START, END)
+        assert "422" in text
+        assert "ast.shift_negative" in text
+        assert "建议" in text
+
+    def test_400_param_problem_guidance(self, monkeypatch):
+        """区间 <40 个交易日等参数问题 → 400 + 可读指引。"""
+        body = {"detail": "分层验证参数无法执行:区间不足 40 个交易日。"}
+        _install_routes(monkeypatch, {("POST", "/api/verify"): (400, body)})
+        text = server.platform_verify_layered(GOOD_CODE, START, END)
+        assert "400" in text
+        assert "40 个交易日" in text
+
+    def test_connect_error_returns_readable_text(self, monkeypatch):
+        _install_broken(monkeypatch, httpx.ConnectError("connection refused"))
+        text = server.platform_verify_layered(GOOD_CODE, START, END)  # 不抛异常
+        assert "无法连接" in text
+        assert "AQUANT_API_BASE" in text
+
+
+# ---------------------------------------------------------------------------
+# tool:platform_get_kline
+# ---------------------------------------------------------------------------
+class TestPlatformGetKline:
+    def test_success_forwarding_query_params(self, monkeypatch):
+        candles = [
+            {"date": "2024-01-02", "open": 10.0, "close": 10.2,
+             "high": 10.5, "low": 9.9, "volume": 100000},
+        ]
+        recorder = _install_routes(
+            monkeypatch, {("GET", "/api/kline"): (200, {"oid": "000001.XSHE",
+                                                        "candles": candles})}
+        )
+        text = server.platform_get_kline("000001.XSHE", START, END)
+        parsed = _assert_json(text)
+        assert parsed["candles"][0]["close"] == 10.2
+        assert dict(recorder.requests[0].url.params) == {
+            "oid": "000001.XSHE",
+            "start": START,
+            "end": END,
+        }
+
+    def test_400_unknown_oid_readable_text(self, monkeypatch):
+        """oid 不在 bundle / bundle 缺失 → 400 + 指引,不抛异常。"""
+        body = {"detail": "oid 不在 bundle:000009.XSHE", "reason": "not found"}
+        _install_routes(monkeypatch, {("GET", "/api/kline"): (400, body)})
+        text = server.platform_get_kline("000009.XSHE", START, END)
+        assert "400" in text
+        assert "000009.XSHE" in text
+        assert "建议" in text
+
+    def test_400_bundle_missing_guidance(self, monkeypatch):
+        body = {"detail": "回测数据 bundle 不存在,请设置 AQUANT_BUNDLE_PATH。"}
+        _install_routes(monkeypatch, {("GET", "/api/kline"): (400, body)})
+        text = server.platform_get_kline("000001.XSHE", START, END)
+        assert "AQUANT_BUNDLE_PATH" in text
+
+    def test_connect_error_returns_readable_text(self, monkeypatch):
+        _install_broken(monkeypatch, httpx.ConnectError("connection refused"))
+        text = server.platform_get_kline("000001.XSHE", START, END)  # 不抛异常
+        assert "无法连接" in text
+        assert "AQUANT_API_BASE" in text
+
+
+# ---------------------------------------------------------------------------
+# tool:platform_arena
+# ---------------------------------------------------------------------------
+class TestPlatformArena:
+    def test_success_forwarding_candidates(self, monkeypatch):
+        body = {
+            "ranking": [{"name": "甲", "annualized_returns": 0.2, "sharpe": 1.5}],
+            "table": "名次 | 候选 | 年化",
+            "details": [{"name": "甲", "status": "ok"}],
+        }
+        candidates = [
+            {"name": "甲", "code": GOOD_CODE},
+            {"name": "乙", "code": BAD_CODE},
+        ]
+        recorder = _install_routes(monkeypatch, {("POST", "/api/arena"): (200, body)})
+        text = server.platform_arena(candidates, START, END)
+        parsed = _assert_json(text)
+        assert parsed["ranking"][0]["name"] == "甲"
+        sent = json.loads(recorder.requests[0].content)
+        assert sent == {"candidates": candidates, "start": START, "end": END}
+
+    def test_422_invalid_candidates_readable_text(self, monkeypatch):
+        """pydantic 参数拦截(候选数量/字段不合法,422)→ 可读文本不抛异常。"""
+        body = {
+            "detail": [
+                {"loc": ["body", "candidates"], "msg": "List should have at most 6 items",
+                 "type": "too_long"}
+            ]
+        }
+        _install_routes(monkeypatch, {("POST", "/api/arena"): (422, body)})
+        text = server.platform_arena(
+            [{"name": f"c{i}", "code": GOOD_CODE} for i in range(7)], START, END
+        )
+        assert "422" in text
+        assert "too_long" in text
+        assert "建议" in text
+
+    def test_400_duplicate_name_readable_text(self, monkeypatch):
+        """候选名重复 → 400 + 中文 detail(指引提示候选名唯一)。"""
+        body = {"detail": "候选名重复:同场竞技的候选名必须唯一。"}
+        _install_routes(monkeypatch, {("POST", "/api/arena"): (400, body)})
+        text = server.platform_arena(
+            [{"name": "同", "code": GOOD_CODE}, {"name": "同", "code": BAD_CODE}],
+            START, END,
+        )
+        assert "400" in text
+        assert "候选名重复" in text
+
+    def test_connect_error_returns_readable_text(self, monkeypatch):
+        _install_broken(monkeypatch, httpx.ConnectError("connection refused"))
+        text = server.platform_arena(
+            [{"name": "甲", "code": GOOD_CODE}], START, END
+        )  # 不抛异常
+        assert "无法连接" in text
+        assert "AQUANT_API_BASE" in text
+
+
+# ---------------------------------------------------------------------------
+# tool:platform_workflow_guide(静态文本,不转发后端)
+# ---------------------------------------------------------------------------
+class TestPlatformWorkflowGuide:
+    def test_contains_seven_steps_and_validate_entry(self):
+        text = server.platform_workflow_guide()
+        assert "七步" in text
+        assert "platform_validate_code" in text
+        assert "platform_run_backtest" in text
+        assert "platform_optimize" in text
+        assert "platform_verify_layered" in text
+        assert "platform_arena" in text
+        assert "platform_get_kline" in text
+
+    def test_contains_template_and_api_constraints(self):
+        text = server.platform_workflow_guide()
+        assert "history_bars" in text and "ndarray" in text
+        assert "POSITION_DIRECTION" in text
+        assert "strategies/" in text and "reports/" in text
+
+    def test_is_plain_text_no_network(self, monkeypatch):
+        """不转发后端:未配置 transport 也直接返回文本。"""
+        monkeypatch.setattr(server, "_TRANSPORT", None)
+        text = server.platform_workflow_guide()
+        assert text.startswith("AQ-Platform")
+        assert "防过拟合" in text
+
+
+# ---------------------------------------------------------------------------
 # 连接失败 → 可读文本(不抛异常)
 # ---------------------------------------------------------------------------
 class TestConnectionFailure:
@@ -306,16 +594,36 @@ class TestConnectionFailure:
 # MCP 工具注册(mcp SDK 可用性已在模块顶部 importorskip)
 # ---------------------------------------------------------------------------
 class TestToolRegistration:
-    def test_three_tools_registered_with_description(self):
+    ALL_TOOLS = {
+        "platform_health",
+        "platform_validate_code",
+        "platform_run_backtest",
+        "platform_optimize",
+        "platform_verify_layered",
+        "platform_get_kline",
+        "platform_arena",
+        "platform_workflow_guide",
+    }
+
+    def test_eight_tools_registered_with_description(self):
         tools = asyncio.run(server.mcp.list_tools())
         names = {t.name for t in tools}
-        assert names == {
-            "platform_health",
-            "platform_validate_code",
-            "platform_run_backtest",
-        }
+        assert names == self.ALL_TOOLS
         for tool in tools:
             assert tool.description  # 每个 tool 都有中文描述
+
+    def test_tools_list_count_is_8(self):
+        """tools/list 数量 = 8(3 个既有工具 + 5 个新增工具)。"""
+        tools = asyncio.run(server.mcp.list_tools())
+        assert len(tools) == 8
+
+    def test_long_running_tools_have_time_expectations_in_description(self):
+        """optimize/verify/arena 的 description 必须写明耗时预期,供外部 agent 决策。"""
+        tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+        assert "耗时" in tools["platform_optimize"].description
+        assert "900s" in tools["platform_optimize"].description
+        assert "耗时" in tools["platform_verify_layered"].description
+        assert "耗时" in tools["platform_arena"].description
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@
 - [方式二:CLI 命令行](#方式二cli-命令行)
 - [方式三:REST API](#方式三rest-api)
 - [方式四:MCP Server](#方式四mcp-server)
+- [外部 Agent 模式](#外部-agent-模式external-agent)
 - [真实数据构建](#真实数据构建)
 - [LLM 配置(接入大模型)](#llm-配置接入大模型)
 - [Token 闸门(scope 与限流)](#token-闸门scope-与限流)
@@ -255,8 +256,33 @@ python -m aquant.mcp_server.server     # stdio 模式,接 Claude Desktop 等客�
 }
 ```
 
-3 个工具:`platform_health` / `platform_validate_code` / `platform_run_backtest`。
+8 个工具:`platform_health` / `platform_validate_code` / `platform_run_backtest` /
+`platform_optimize`(AI 自动优化,2 轮常见 3~8 分钟)/ `platform_verify_layered`(防过拟合)/
+`platform_get_kline` / `platform_arena` / `platform_workflow_guide`(不确定如何开始时先调用)。
 非法参数与非 2xx 一律返回**可读中文错误文本**(不抛异常),让 LLM 自纠。
+
+## 外部 Agent 模式(external-agent/)
+
+在 ZCode / Claude Code / Codex 等**全能力 agent 平台**里完成全流程:外部平台选中任意文件夹作为项目目录(`strategies/` 存策略、`reports/` 存报告),agent 通过 MCP 工具完成「策略编辑→生成→回测→优化→验证」,全程在它们自己的对话里进行——本平台的 Web/CLI 此时只是后台引擎。
+
+快速接入三步:
+
+```bash
+# 1. 启动平台 API(安装与 bundle 构建见「快速开始」)
+uvicorn aquant.api.main:app --port 8000
+
+# 2. 注册 MCP server(Claude Code 示例;python 需能 import aquant,建议用 .venv 绝对路径)
+claude mcp add aquant -- python -m aquant.mcp_server.server
+
+# 3. 安装方法论 SKILL.md(让 agent 自动按七步工作流执行)
+mkdir -p ~/.claude/skills/aquant-quant && cp external-agent/SKILL.md ~/.claude/skills/aquant-quant/SKILL.md
+```
+
+MCP 侧环境变量:`AQUANT_API_BASE`(默认 http://127.0.0.1:8000)、`AQUANT_MCP_TOKEN`(平台启用 token 闸门时必填,回测/优化/验证需 readwrite 档)。
+
+- `external-agent/SKILL.md` — agent 方法论:七步工作流(目录约定→写码→校验→回测→诊断→优化→分层验证/竞技场)、策略约束清单、错误处理表;
+- `external-agent/README.md` — Claude Code / ZCode / Codex 各平台接入指南与通用 mcpServers 配置模板;
+- `external-agent/project-template/` — 可复制的项目目录骨架(strategies/、reports/、.gitignore)。
 
 ---
 

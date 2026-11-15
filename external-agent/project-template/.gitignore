@@ -1,0 +1,7 @@
+# 报告 JSON 为机器留档,可能体积较大;若希望入库,删除下面一行(README.md 不受影响)
+reports/*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

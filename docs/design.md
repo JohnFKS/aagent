@@ -170,3 +170,4 @@ quant-platform/
 - DeterministicLLM 兜底模板不解析自然语言(固定双均线形态);配置 AQUANT_LLM_* 接入 OpenAI 兼容 API 后,"对话生成"才真正理解需求语义。
 - ~~MCP token 闸门是 scope 门禁的简化版~~ → 已完整化:多 token(AQUANT_MCP_TOKENS JSON)+ scope 规则表(readonly/readwrite,fail-closed)+ 每 token 滑窗限流(RPM 可配,429);api/token_gate.py。
 - 后续:分钟线与撮合升级、模拟盘对接(实盘不在本期)、多 Agent 竞技场前端深化(逐轮进化赛制)、移动端适配。
+- 外部 Agent 模式(external-agent/,纯文档、不新增端点):面向 ZCode/Claude Code/Codex 等外部 agent 平台的集成包——SKILL.md 方法论(七步工作流,与 workflow_guide 工具对齐)+ 各平台 MCP stdio 接入模板 + 可复制的项目目录骨架;外部平台选中任意文件夹作项目目录,经 MCP 薄桥驱动本系统完成"编辑→校验→回测→优化→验证"全流程,四层校验防线对外部 agent 同样生效。

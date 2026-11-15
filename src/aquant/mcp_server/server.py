@@ -33,19 +33,29 @@ except ImportError:  # pragma: no cover - mcp 1.x 兼容
 
 DEFAULT_API_BASE = "http://127.0.0.1:8000"
 REQUEST_TIMEOUT_SECONDS = 60.0
+# 长耗时端点的读超时:/api/verify(两次回测+随机基准,5~20s)、/api/arena
+# (并行回测,10~60s)、/api/optimize(每轮 = LLM 生成 + 两次回测,2 轮常见
+# 3~8 分钟,读超时必须 ≥900s)。
+VERIFY_TIMEOUT_SECONDS = 120.0
+ARENA_TIMEOUT_SECONDS = 180.0
+OPTIMIZE_TIMEOUT_SECONDS = 900.0
 
 mcp = _MCPServer(
     name="aquant-platform",
     title="AQ-Platform 量化回测平台",
     description=(
         "AQ-Platform(A股回测正确性平台)的 MCP 桥。"
-        "通过本地 FastAPI 完成:健康检查、策略代码校验、真实回测。"
+        "通过本地 FastAPI 完成:健康检查、策略代码校验、真实回测、AI 优化、"
+        "分层验证(防过拟合)、多策略竞技场、K 线行情查询。"
     ),
     instructions=(
         "本 server 是本地量化平台的薄桥。典型用法:"
         "先 platform_health 确认后端可用;写/改策略代码后用 platform_validate_code "
         "做 Layer 1 校验(返回 findings 可指导修改);校验通过后用 platform_run_backtest "
-        "执行真实回测。若返回文本中包含错误或校验 findings,请按提示修正参数/代码后重试,"
+        "执行真实回测;platform_optimize 做 AI 优化、platform_verify_layered 做分层验证"
+        "(防过拟合必做)、platform_arena 做多策略排名、platform_get_kline 查行情。"
+        "不确定如何开始时先调用 platform_workflow_guide 获取七步工作流指南。"
+        "若返回文本中包含错误或校验 findings,请按提示修正参数/代码后重试,"
         "不要向用户原样抛出堆栈。"
     ),
 )
@@ -59,9 +69,9 @@ def _api_base() -> str:
     return os.environ.get("AQUANT_API_BASE", DEFAULT_API_BASE).rstrip("/")
 
 
-def _build_client() -> httpx.Client:
+def _build_client(timeout: float = REQUEST_TIMEOUT_SECONDS) -> httpx.Client:
     """构造 httpx 客户端;_TRANSPORT 非 None 时(测试)走 MockTransport。"""
-    return httpx.Client(transport=_TRANSPORT, timeout=REQUEST_TIMEOUT_SECONDS)
+    return httpx.Client(transport=_TRANSPORT, timeout=timeout)
 
 
 def _outgoing_token() -> str:
@@ -100,17 +110,24 @@ def _request(
     path: str,
     *,
     json_payload: dict[str, Any] | None = None,
+    params: dict[str, str] | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> httpx.Response:
-    """向后端发一次 HTTP 请求;配置了 token 时附带 X-MCP-Token 头。"""
+    """向后端发一次 HTTP 请求;配置了 token 时附带 X-MCP-Token 头。
+
+    timeout 按端点耗时选择(默认 60s;optimize 用 900s 长读超时);
+    params 为 GET/POST 共用的 query 参数。
+    """
     headers: dict[str, str] = {}
     token = _outgoing_token()
     if token:
         headers["X-MCP-Token"] = token
-    with _build_client() as client:
+    with _build_client(timeout) as client:
         return client.request(
             method,
             _api_base() + path,
             json=json_payload,
+            params=params,
             headers=headers,
         )
 
@@ -162,6 +179,8 @@ def _error_text(
     if isinstance(data, dict):
         if "detail" in data:
             lines.append(f"detail:{_detail_text(data['detail'])}")
+        if "reason" in data:
+            lines.append(f"reason:{_detail_text(data['reason'])}")
         verdict = data.get("verdict")
         if isinstance(verdict, dict):
             lines.append(_findings_summary(verdict))
@@ -196,6 +215,56 @@ TOKEN_HINT = (
     "(AQUANT_MCP_TOKEN 或 AQUANT_MCP_TOKENS 配置),"
     "需要正确的 X-MCP-Token 后才能调用。"
 )
+OPTIMIZE_HINT = (
+    "HTTP 422 为校验拦截,请先调用 platform_validate_code 并按 findings 修改代码后重试;"
+    "detail 提示 bundle 缺失时,请先构建 RQAlpha 数据 bundle 或设置 AQUANT_BUNDLE_PATH;"
+    "HTTP 502 为 LLM 服务故障(外部依赖),请稍后重试或检查服务端 LLM 配置;"
+    "401/403/429 为 token 闸门(鉴权/权限/限流),需正确 X-MCP-Token 或稍后再试。"
+)
+VERIFY_HINT = (
+    "HTTP 422 为校验拦截,请先调用 platform_validate_code 并按 findings 修改代码后重试;"
+    "detail 提示 bundle 缺失时,请先构建 RQAlpha 数据 bundle 或设置 AQUANT_BUNDLE_PATH;"
+    "detail 提示区间不足时,请扩大 start/end(分层验证要求区间 ≥40 个交易日,"
+    "is_ratio 限 0.5~0.9);401/403/429 为 token 闸门,需正确 X-MCP-Token 或稍后再试。"
+)
+KLINE_HINT = (
+    "oid 需为 bundle 内合约的 order_book_id(形如 000001.XSHE / 600000.XSHG),"
+    "start/end 需为 YYYY-MM-DD 日期;detail 提示 bundle 缺失时,请先构建 RQAlpha "
+    "数据 bundle 或设置 AQUANT_BUNDLE_PATH 后重试。"
+)
+ARENA_HINT = (
+    "candidates 需为 1~6 个 {name, code} 对象且候选名唯一;"
+    "候选代码建议先过 platform_validate_code 提高入围率;"
+    "detail 提示 bundle 缺失时,请先构建 RQAlpha 数据 bundle 或设置 AQUANT_BUNDLE_PATH;"
+    "401/403/429 为 token 闸门,需正确 X-MCP-Token 或稍后再试。"
+)
+
+
+def _validation_rejected_text(
+    tool: str,
+    resp: httpx.Response,
+    action: str,
+    hint: str,
+) -> str:
+    """422 校验拦截 → verdict/findings 摘要拼进可读文本(不抛异常)。
+
+    与 platform_run_backtest 的 422 分支同语义:verdict 的 findings 摘要
+    指导 LLM 改码自纠,完整 verdict JSON 仍在文本中可继续解析。
+    """
+    try:
+        data: Any = resp.json()
+    except Exception:  # noqa: BLE001 - 任何解析失败都降级为纯文本
+        data = None
+    lines = [f"[{tool}] {action}被校验拦截(HTTP 422):策略校验未通过。"]
+    if isinstance(data, dict):
+        verdict = data.get("verdict")
+        if isinstance(verdict, dict):
+            lines.append(_findings_summary(verdict))
+            lines.append("verdict JSON:\n" + _json_text(verdict))
+        elif "detail" in data:
+            lines.append(f"detail:{_detail_text(data['detail'])}")
+    lines.append(f"建议:{hint}")
+    return "\n".join(lines)
 
 
 @mcp.tool(
@@ -300,6 +369,221 @@ def platform_run_backtest(code: str, start: str, end: str, cash: float | None = 
     return _error_text(
         "platform_run_backtest", "POST", "/api/backtest", resp, hint=BACKTEST_HINT
     )
+
+
+@mcp.tool(
+    description=(
+        "AI 自动优化策略(闭环:回测→诊断→LLM 改码→校验→回测→对比保留)。"
+        "参数:code(必填,已通过 Layer 1 校验的策略源码);start/end(必填,YYYY-MM-DD 回测区间);"
+        "rounds(可选,优化轮次预算 1~5,默认 2,连续 2 轮无改进自动早停);"
+        "cash(可选,初始资金);overrides(可选,回测参数覆盖 dict)。"
+        "转发 POST /api/optimize,返回 {improved, best:{code,summary}, baseline, rounds[], "
+        "elapsed_seconds} JSON 文本:best.code 为历史最优代码,rounds[] 为每轮演进史,"
+        "improved=False 表示无改进(保留原代码)。"
+        "耗时预期:每轮 = 1 次 LLM 生成 + 2 次回测,2 轮常见 3~8 分钟"
+        "(读超时已放宽到 900s),期间请耐心等待,勿中断重试。"
+        "错误语义:HTTP 422 校验拦截(返回文本含 findings 摘要,请先改代码);"
+        "HTTP 400 bundle 缺失(含构建指引);HTTP 502 LLM 服务故障(稍后重试)。"
+        "配合:优化完成后建议继续 platform_verify_layered 验证 best.code 防过拟合;"
+        "多个候选版本横向对比可用 platform_arena。"
+    )
+)
+def platform_optimize(
+    code: str,
+    start: str,
+    end: str,
+    rounds: int = 2,
+    cash: float | None = None,
+    overrides: dict | None = None,
+) -> str:
+    """转发 POST /api/optimize;200 返回优化结果 JSON,422/400/502 返回可读错误文本。"""
+    payload: dict[str, Any] = {"code": code, "start": start, "end": end, "rounds": rounds}
+    if cash is not None:
+        payload["cash"] = cash
+    if overrides is not None:
+        payload["overrides"] = overrides
+    try:
+        resp = _request(
+            "POST", "/api/optimize", json_payload=payload, timeout=OPTIMIZE_TIMEOUT_SECONDS
+        )
+    except Exception as exc:  # noqa: BLE001 - 薄桥不向 LLM 抛异常
+        return _transport_error_text("platform_optimize", exc)
+    if resp.is_success:
+        try:
+            return _json_text(resp.json())
+        except Exception:  # noqa: BLE001
+            return f"平台返回了非 JSON 响应(HTTP {resp.status_code}):{resp.text}"
+    if resp.status_code == 422:
+        # 校验拦截:422 + verdict(findings 摘要拼进文本,LLM 改码后重试)
+        return _validation_rejected_text("platform_optimize", resp, "优化", OPTIMIZE_HINT)
+    return _error_text(
+        "platform_optimize", "POST", "/api/optimize", resp, hint=OPTIMIZE_HINT
+    )
+
+
+@mcp.tool(
+    description=(
+        "分层验证(防过拟合必做):样本内/样本外切分两次回测 + 随机基准对照 + 判定"
+        "+ 模拟盘引导清单。参数:code(必填,RQAlpha 策略源码);start/end(必填,"
+        "YYYY-MM-DD,整个区间需 ≥40 个交易日);is_ratio(可选,样本内占比 0.5~0.9,"
+        "默认 0.7);overrides(可选,回测参数覆盖 dict)。"
+        "转发 POST /api/verify,返回 {status, comparison, checks, report, "
+        "random_baseline_returns, paper_checklist, ...} JSON 文本:"
+        "status=pass 表示样本外仍优于随机基准才可信,status=reject 请回读 checks/report 修正策略。"
+        "耗时预期:两次回测 + 随机基准对照,约 5~20 秒。"
+        "错误语义:HTTP 422 校验拦截(返回文本含 findings 摘要);"
+        "HTTP 400 bundle 缺失或区间过短(含指引)。"
+        "配合:platform_optimize 产出的 best.code 应再用本工具验证一次;"
+        "验证通过后的多策略对比可用 platform_arena。"
+    )
+)
+def platform_verify_layered(
+    code: str,
+    start: str,
+    end: str,
+    is_ratio: float = 0.7,
+    overrides: dict | None = None,
+) -> str:
+    """转发 POST /api/verify;200 返回分层验证结果 JSON,422/400 返回可读错误文本。"""
+    payload: dict[str, Any] = {"code": code, "start": start, "end": end, "is_ratio": is_ratio}
+    if overrides is not None:
+        payload["overrides"] = overrides
+    try:
+        resp = _request(
+            "POST", "/api/verify", json_payload=payload, timeout=VERIFY_TIMEOUT_SECONDS
+        )
+    except Exception as exc:  # noqa: BLE001 - 薄桥不向 LLM 抛异常
+        return _transport_error_text("platform_verify_layered", exc)
+    if resp.is_success:
+        try:
+            return _json_text(resp.json())
+        except Exception:  # noqa: BLE001
+            return f"平台返回了非 JSON 响应(HTTP {resp.status_code}):{resp.text}"
+    if resp.status_code == 422:
+        return _validation_rejected_text(
+            "platform_verify_layered", resp, "分层验证", VERIFY_HINT
+        )
+    return _error_text(
+        "platform_verify_layered", "POST", "/api/verify", resp, hint=VERIFY_HINT
+    )
+
+
+@mcp.tool(
+    description=(
+        "查询真实价日线 K 线(行情观察用,不执行回测)。"
+        "参数:oid(必填,合约 order_book_id,形如 000001.XSHE / 600000.XSHG);"
+        "start/end(必填,YYYY-MM-DD,用于缩小日期范围)。"
+        "转发 GET /api/kline,返回 {oid, start, end, candles:[{date, open, close, "
+        "high, low, volume}]} JSON 文本;最多 500 根,超出时等距抽样并保留首末两根。"
+        "耗时预期:直接读本地数据 bundle,通常 <1 秒。"
+        "错误语义:HTTP 400 表示 oid 不在 bundle 或 bundle 缺失(返回文本含指引)。"
+        "配合:写策略/挑标的时先用本工具观察量价形态;回测结果异常时也可对照行情核查;"
+        "策略验证仍需走 platform_validate_code + platform_run_backtest 流程。"
+    )
+)
+def platform_get_kline(oid: str, start: str, end: str) -> str:
+    """转发 GET /api/kline(query 参数);200 返回 candles JSON,400 返回可读错误文本。"""
+    try:
+        resp = _request("GET", "/api/kline", params={"oid": oid, "start": start, "end": end})
+    except Exception as exc:  # noqa: BLE001 - 薄桥不向 LLM 抛异常
+        return _transport_error_text("platform_get_kline", exc)
+    if resp.is_success:
+        try:
+            return _json_text(resp.json())
+        except Exception:  # noqa: BLE001
+            return f"平台返回了非 JSON 响应(HTTP {resp.status_code}):{resp.text}"
+    return _error_text("platform_get_kline", "GET", "/api/kline", resp, hint=KLINE_HINT)
+
+
+@mcp.tool(
+    description=(
+        "多策略竞技场:1~6 个候选策略并行回测并按(年化收益, 夏普)降序排名"
+        "(养蛊式大逃杀)。参数:candidates(必填,列表,元素为 {name: 候选名, "
+        "code: 策略源码},1~6 个且候选名唯一);start/end(必填,YYYY-MM-DD 回测区间)。"
+        "转发 POST /api/arena,返回 {ranking, table, details, ...} JSON 文本。"
+        "校验不过的候选 status=rejected、执行失败的 status=failed,只淘汰自己、不中断全场。"
+        "耗时预期:并行回测,约 10~60 秒(候选越多越久)。"
+        "错误语义:HTTP 422 参数不合法(候选数量/字段);HTTP 400 候选名重复或 bundle 缺失"
+        "(返回文本含指引)。"
+        "配合:提交前先用 platform_validate_code 预检各候选可提高入围率;"
+        "冠军代码建议再做 platform_verify_layered 防过拟合。"
+    )
+)
+def platform_arena(candidates: list[dict[str, str]], start: str, end: str) -> str:
+    """转发 POST /api/arena;200 返回排名结果 JSON,422/400 返回可读错误文本。"""
+    payload: dict[str, Any] = {"candidates": candidates, "start": start, "end": end}
+    try:
+        resp = _request(
+            "POST", "/api/arena", json_payload=payload, timeout=ARENA_TIMEOUT_SECONDS
+        )
+    except Exception as exc:  # noqa: BLE001 - 薄桥不向 LLM 抛异常
+        return _transport_error_text("platform_arena", exc)
+    if resp.is_success:
+        try:
+            return _json_text(resp.json())
+        except Exception:  # noqa: BLE001
+            return f"平台返回了非 JSON 响应(HTTP {resp.status_code}):{resp.text}"
+    return _error_text("platform_arena", "POST", "/api/arena", resp, hint=ARENA_HINT)
+
+
+WORKFLOW_GUIDE = """\
+AQ-Platform 外部 agent 工作流指南(七步全流程:
+策略编辑 → 校验 → 回测 → 优化 → 分层验证 → 竞技场 → 归档)
+
+本平台通过 MCP 工具(platform_*)驱动本地 FastAPI 后端。不确定如何开始时按下面
+七步执行;每一步的返回文本若含错误或校验 findings,按提示修正后重试,不要向用户
+原样抛出堆栈。
+
+第 1 步 建项目目录
+  为本次任务创建项目目录,统一结构:
+    <项目目录>/strategies/   # 策略源码 .py 文件
+    <项目目录>/reports/      # 回测/验证/竞技场结果(JSON 或文本)
+
+第 2 步 写策略代码(保存到 strategies/)
+  rqalpha 最小模板要点:init(context) 中设置目标标的与参数(如均线窗口),
+  handle_bar(context, bar_dict) 中用 history_bars 取行情、order_shares/order_value
+  下单、用 logger 记录信号。
+  平台 API 约束(违反会被 Layer 1 校验拦截):
+  - history_bars(...) 返回 numpy ndarray(不是 DataFrame),按 [行, 列] 索引,
+    如 [..., 0] 取最新收盘价序列;
+  - get_position(order_book_id) 需配合 POSITION_DIRECTION.LONG / POSITION_DIRECTION.SHORT
+    指明方向;
+  - 禁止外部数据源(网络请求、读文件)与墙钟(datetime.now()/time.time()),
+    只允许使用 bundle 行情与回测时钟。
+
+第 3 步 校验到 0 error:platform_validate_code(code, start, end)
+  Layer 1 静态检查;error_count=0 且无 ERROR 级 findings 才算通过,
+  否则按 findings 修改代码后重试。
+
+第 4 步 回测:platform_run_backtest(code, start, end, cash?)
+  校验通过后执行真实回测,读取 metrics(年化收益/夏普/最大回撤等),把结果存入 reports/。
+
+第 5 步 优化:platform_optimize(code, start, end, rounds=2)
+  AI 闭环"回测→诊断→LLM 改码→对比保留",耗时数分钟;采用返回的 best.code 作为
+  新策略代码(baseline 为原版,rounds[] 为演进史;improved=False 表示无改进,
+  保留原代码)。
+
+第 6 步 分层验证(防过拟合必做):platform_verify_layered(best.code, start, end, is_ratio=0.7)
+  样本内/样本外对比 + 随机基准对照 + 模拟盘清单;优化后的策略应再做一次,
+  status=pass 才可信,status=reject 时回读 checks/report 修正策略。
+
+第 7 步 竞技与归档
+  多策略对比:platform_arena(candidates=[{name, code}], start, end) 并行回测排名
+  (1~6 个候选,校验不过的候选 rejected 只淘汰自己);需要观察行情时用
+  platform_get_kline(oid, start, end)。
+  把最终采用的策略代码存入 strategies/,把回测/验证/竞技场结果存入 reports/,
+  并向用户汇报最终结论。
+"""
+
+
+@mcp.tool(
+    description=(
+        "返回 AQ-Platform 外部 agent 工作流指南(七步全流程);不确定如何开始时先调用本工具。"
+    )
+)
+def platform_workflow_guide() -> str:
+    """返回静态七步工作流文本(不转发后端,无网络请求)。"""
+    return WORKFLOW_GUIDE
 
 
 def main() -> None:

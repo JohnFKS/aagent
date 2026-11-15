@@ -191,6 +191,23 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
     trades = result["trades"] if isinstance(result, dict) else getattr(result, "trades", [])
     # trades 可能是 DataFrame(6.5.0 成交明细)或列表;DataFrame 对 `or` 求真值会抛错
     trades_count = len(trades) if hasattr(trades, "__len__") else 0
+    # 运行时崩溃透出:静态校验通过但撮合阶段崩溃(如 history_bars 单字段请求返回一维
+    # ndarray 还按字段名取列)。把错误文本返回给调用方(外部 agent 据此自纠),
+    # 否则 metrics=null 而外部 agent 无从得知原因。
+    exec_error = result.get("execution_error") if isinstance(result, dict) else getattr(result, "execution_error", None)
+    if exec_error:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": (
+                    "策略通过静态校验,但回测执行阶段崩溃。"
+                    "常见原因:history_bars 单字段请求(如 fields='close')返回一维 ndarray,"
+                    "直接参与运算即可,不要再按字段名取列(多字段请求才返回结构化数组);"
+                    "下单前判断数组长度;检查标的当日是否停牌。"
+                ),
+                "execution_error": str(exec_error)[-2000:],
+            },
+        )
     return {
         "passed": True,
         "verdict": verdict.to_dict(),
