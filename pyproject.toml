@@ -1,0 +1,36 @@
+[project]
+name = "aquant"
+version = "0.1.0"
+description = "A股回测正确性平台:RQAlpha + 四层校验(代码校验/统一数据口径/保守默认参数/分层验证)"
+requires-python = ">=3.11"
+dependencies = [
+    "rqalpha>=6.5.0",
+    "pandas>=2.0",
+    "numpy>=1.26",
+    "h5py>=3.8",
+    "pyarrow>=14.0",
+    "pyyaml>=6.0",
+    "click>=8.1",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+akshare = ["akshare>=1.14"]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"aquant.agents" = ["prompts/*.md"]
+"aquant.config" = ["*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

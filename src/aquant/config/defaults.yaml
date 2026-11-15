@@ -1,0 +1,41 @@
+# Layer 3: 平台保守默认参数(唯一事实来源)
+#
+# 这些值是"回测尽量贴近实盘"的底线设置。用户可以在自己的策略配置中提供
+# 更保守的值(如更高滑点、更低成交量占比),平台会尊重用户值;
+# 但更激进的值(零滑点、零费率、关闭 T+1)会在 Layer 1 校验中被 ERROR 拒绝。
+#
+# 键名与 RQAlpha 6.5.0 配置键一一对应(已核实 rqalpha 源码):
+#   mod.sys_simulation.* 与 mod.sys_transaction_cost.* 与 mod.sys_accounts.*
+
+slippage:
+  # 比例滑点(双边)。A股小额单的实盘冲击通常在千一~千五,取 0.002 是
+  # "宁可保守"的默认值;零滑点回测是收益虚高的第一大来源。
+  value: 0.002
+  min_allowed: 0.002
+  model: PriceRatioSlippage
+
+volume_limit:
+  enabled: true
+  # 单 bar 成交量占比上限。RQAlpha 默认 0.25;平台取更保守的 0.2,
+  # 防止小盘股回测中订单"吃掉"整根 K 线的成交量。
+  percent: 0.2
+  max_allowed: 0.25
+
+transaction_cost:
+  # 佣金倍率(默认佣金:股票万八)与印花税倍率(默认千一、卖出单边),
+  # ≥1 才是真实世界;禁止 <1。
+  stock_commission_multiplier_min: 1.0
+  tax_multiplier_min: 1.0
+  stock_min_commission: 5.0
+
+matching:
+  # 涨跌停撮合限制与 T+1 是 A 股市场规则,绝不允许关闭。
+  price_limit_enabled: true
+  stock_t1_enabled: true
+  signal_mode_enabled: false     # 信号模式跳过撮合 = 非真实回测
+  allowed_matching_types: [current_bar, vwap]
+  default_matching_type: current_bar
+
+account:
+  supported_types: [STOCK]
+  default_cash: 1000000          # 默认初始资金 100 万
