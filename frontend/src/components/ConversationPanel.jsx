@@ -54,6 +54,10 @@ export default function ConversationPanel({ notify }) {
   const [compareFrom, setCompareFrom] = useState('');
   const [compareTo, setCompareTo] = useState('');
   const [diff, setDiff] = useState(null);
+  const [editingTid, setEditingTid] = useState('');
+  const [turnDraft, setTurnDraft] = useState('');
+  const [editingVid, setEditingVid] = useState('');
+  const [versionDraft, setVersionDraft] = useState({ message: '', analysis: '' });
   const bottomRef = useRef(null);
 
   const versions = session?.versions || [];
@@ -148,7 +152,7 @@ export default function ConversationPanel({ notify }) {
   }, [start, end, title, draft, refreshSessions, loadSession, notify]);
 
   const deleteSession = useCallback(async () => {
-    if (!sid || !window.confirm(`确定删除会话 ${sid}?策略版本与对话将一并删除。`)) return;
+    if (!sid) return;
     setBusy('load');
     try {
       await api.sessionDelete(sid);
@@ -296,6 +300,107 @@ export default function ConversationPanel({ notify }) {
     await fetchDiff(sid, compareFrom, compareTo);
   }, [fetchDiff, sid, compareFrom, compareTo]);
 
+  // ---- 永久删除会话与历史对话/版本 CRUD --------------------------------
+  const purgeSession = useCallback(async () => {
+    if (!sid || !window.confirm(
+      `永久删除会话 ${sid}?\n所有策略版本与对话将被彻底抹除,不可恢复。`,
+    )) return;
+    setBusy('load');
+    try {
+      await api.sessionDelete(sid, true);
+      await refreshSessions();
+      await loadSession('');
+      notify('success', '会话已永久删除,不可恢复。');
+    } catch (e) {
+      setError(e.message);
+      notify('error', e.message);
+    } finally {
+      setBusy('');
+    }
+  }, [sid, refreshSessions, loadSession, notify]);
+
+  const addNote = useCallback(async () => {
+    const note = text.trim();
+    if (!sid || !note || busy) return;
+    setBusy('edit');
+    try {
+      const data = await api.sessionTurnAdd(sid, { role: 'note', text: note });
+      setSession(data.session);
+      setText('');
+      notify('success', '笔记已追加到对话历史。');
+    } catch (e) {
+      setError(e.message);
+      notify('error', e.message);
+    } finally {
+      setBusy('');
+    }
+  }, [sid, text, busy, notify]);
+
+  const saveTurnEdit = useCallback(async (tid) => {
+    if (!sid || !turnDraft.trim()) return;
+    setBusy('edit');
+    try {
+      const data = await api.sessionTurnUpdate(sid, tid, { text: turnDraft });
+      setSession(data.session);
+      setEditingTid('');
+      notify('success', `对话 ${tid} 已修改。`);
+    } catch (e) {
+      setError(e.message);
+      notify('error', e.message);
+    } finally {
+      setBusy('');
+    }
+  }, [sid, turnDraft, notify]);
+
+  const removeTurn = useCallback(async (tid) => {
+    if (!sid || !window.confirm(`永久删除对话消息 ${tid}?此操作不可恢复。`)) return;
+    setBusy('edit');
+    try {
+      const data = await api.sessionTurnDelete(sid, tid);
+      setSession(data.session);
+      notify('success', `对话 ${tid} 已永久删除。`);
+    } catch (e) {
+      setError(e.message);
+      notify('error', e.message);
+    } finally {
+      setBusy('');
+    }
+  }, [sid, notify]);
+
+  const saveVersionMeta = useCallback(async (vid) => {
+    if (!sid) return;
+    setBusy('edit');
+    try {
+      const data = await api.sessionVersionUpdate(sid, vid, versionDraft);
+      setSession(data.session);
+      setEditingVid('');
+      notify('success', `版本 ${vid} 说明已更新。`);
+    } catch (e) {
+      setError(e.message);
+      notify('error', e.message);
+    } finally {
+      setBusy('');
+    }
+  }, [sid, versionDraft, notify]);
+
+  const removeVersion = useCallback(async (vid) => {
+    if (!sid || !window.confirm(`永久删除策略版本 ${vid}?\n若它是当前版本,将自动回退到父版本;此操作不可恢复。`)) return;
+    setBusy('rollback');
+    try {
+      const data = await api.sessionVersionDelete(sid, vid);
+      setSession(data.session);
+      setDirty(false);
+      setViewVid('');
+      setDiff(null);
+      notify('success', `版本 ${vid} 已永久删除。`);
+    } catch (e) {
+      setError(e.message);
+      notify('error', e.message);
+    } finally {
+      setBusy('');
+    }
+  }, [sid, notify]);
+
   return (
     <section className="conv-layout">
       {/* 左栏:多轮对话 */}
@@ -321,8 +426,24 @@ export default function ConversationPanel({ notify }) {
           <button type="button" className="btn btn-ghost" onClick={createSession} disabled={!!busy}>
             新建
           </button>
-          <button type="button" className="btn btn-ghost" onClick={deleteSession} disabled={!sid || !!busy}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => {
+              if (window.confirm(`删除会话 ${sid}?策略与对话将移入归档(可恢复)。`)) deleteSession();
+            }}
+            disabled={!sid || !!busy}
+          >
             删除
+          </button>
+          <button
+            type="button"
+            className="btn btn-danger"
+            onClick={purgeSession}
+            disabled={!sid || !!busy}
+            title="不可恢复:彻底抹除策略版本与全部对话"
+          >
+            永久删除
           </button>
         </div>
         <div className="conv-meta-row">
@@ -361,11 +482,43 @@ export default function ConversationPanel({ notify }) {
                   </button>
                 )}
               </div>
-              <div className="conv-msg-body">{turn.text}</div>
+              {editingTid === turn.id ? (
+                <div className="conv-turn-edit">
+                  <textarea
+                    aria-label="编辑对话文本"
+                    value={turnDraft}
+                    onChange={(e) => setTurnDraft(e.target.value)}
+                    disabled={!!busy}
+                  />
+                  <button type="button" className="btn btn-primary" onClick={() => saveTurnEdit(turn.id)} disabled={!!busy}>
+                    保存
+                  </button>
+                  <button type="button" className="btn btn-ghost" onClick={() => setEditingTid('')} disabled={!!busy}>
+                    取消
+                  </button>
+                </div>
+              ) : (
+                <div className="conv-msg-body">{turn.text}</div>
+              )}
               {turn.result?.metrics && (
                 <div className="conv-msg-metrics mono">{metricsLine(turn.result.metrics)}</div>
               )}
               {turn.result?.error && <div className="conv-msg-error">{turn.result.error}</div>}
+              {editingTid !== turn.id && (
+                <div className="conv-msg-actions">
+                  <button
+                    type="button"
+                    className="conv-mini-btn"
+                    onClick={() => { setEditingTid(turn.id); setTurnDraft(turn.text); }}
+                    disabled={!!busy}
+                  >
+                    编辑
+                  </button>
+                  <button type="button" className="conv-mini-btn conv-mini-danger" onClick={() => removeTurn(turn.id)} disabled={!!busy}>
+                    删除
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -396,14 +549,25 @@ export default function ConversationPanel({ notify }) {
               />
               修改后立即回测
             </label>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={sendTurn}
-              disabled={!text.trim() || !!busy}
-            >
-              发送并修改策略
-            </button>
+            <div className="conv-composer-buttons">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={addNote}
+                disabled={!sid || !text.trim() || !!busy}
+                title="把输入内容作为笔记追加到对话历史,不触发 Agent 改码"
+              >
+                + 笔记
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={sendTurn}
+                disabled={!text.trim() || !!busy}
+              >
+                发送并修改策略
+              </button>
+            </div>
           </div>
           <div className="conv-examples">
             {EXAMPLES.map((ex) => (
@@ -471,6 +635,8 @@ export default function ConversationPanel({ notify }) {
             }}
             onRollback={doRollback}
             onView={(vid) => setViewVid(vid)}
+            onEditMeta={saveVersionMeta}
+            onDelete={removeVersion}
           />
         </div>
       </div>

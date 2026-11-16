@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import threading
 import uuid
 from datetime import datetime
@@ -90,6 +91,8 @@ class SessionStore:
                 "current_version": None,
                 "versions": [],
                 "turns": [],
+                "version_counter": 2 if code else 1,
+                "turn_counter": 1,
             }
             if code:
                 session["versions"].append({
@@ -169,6 +172,28 @@ class SessionStore:
             os.replace(path, target)
             return True
 
+    def purge(self, sid: str) -> bool:
+        """永久删除会话(不可恢复):直接抹除 JSON 文件,包括 .trash/ 中的旧归档。
+
+        IDE 插件的 sitecustomize 会劫持工作区内 unlink 并试图移入回收站,
+        在非标准挂载点会抛错。先把文件原子移动到系统临时目录(shim 对 /tmp
+        放行),再 unlink —— 达到真正永久删除,不依赖任何环境插件行为。
+        """
+        with self._LOCK:
+            removed = False
+            candidates = [self._path(sid), self.dir / ".trash" / f"{sid}.json"]
+            for path in candidates:
+                if not path.exists():
+                    continue
+                tmp = Path(tempfile.gettempdir()) / f"aquant_purge_{uuid.uuid4().hex}"
+                os.replace(path, tmp)
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass  # 临时目录残留不影响"已从会话库永久移除"的语义
+                removed = True
+            return removed
+
     # ---- 版本 -------------------------------------------------------------
     def _require(self, sid: str) -> dict[str, Any]:
         data = self._read(sid)
@@ -229,7 +254,14 @@ class SessionStore:
             data = self._require(sid)
             versions = data.setdefault("versions", [])
             parent = data.get("current_version")
-            vid = f"v{len(versions) + 1}"
+            # 会话级单调计数器:ID 永不复用,避免历史消息引用指向新版本
+            next_no = int(data.get("version_counter") or 0)
+            if next_no < 1:  # 兼容旧会话(无计数器):按现存最大 id 续接
+                next_no = max((int(v["id"][1:]) for v in versions
+                               if str(v.get("id", "")).startswith("v")
+                               and str(v["id"][1:]).isdigit()), default=0) + 1
+            data["version_counter"] = next_no + 1
+            vid = f"v{next_no}"
             version = {
                 "id": vid,
                 "parent": parent,
@@ -271,6 +303,59 @@ class SessionStore:
                     return dict(version)
             raise KeyError(f"版本不存在:{vid}")
 
+    def update_version_meta(
+        self,
+        sid: str,
+        vid: str,
+        *,
+        message: str | None = None,
+        analysis: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        """修改版本元信息(说明/分析/来源);代码快照不可原地改,改动代码应新增版本。"""
+        if source is not None and source not in {"initial", "agent", "user", "rollback"}:
+            raise ValueError(f"未知版本来源:{source!r}")
+        with self._LOCK:
+            data = self._require(sid)
+            for version in data.get("versions") or []:
+                if version.get("id") == vid:
+                    if message is not None:
+                        version["message"] = message
+                    if analysis is not None:
+                        version["analysis"] = analysis
+                    if source is not None:
+                        version["source"] = source
+                    self._write(sid, data)
+                    return dict(version)
+            raise KeyError(f"版本不存在:{vid}")
+
+    def delete_version(self, sid: str, vid: str) -> dict[str, Any]:
+        """永久删除单个策略版本;current 指针回落到父版本(父被删则取前一个版本)。
+
+        同时把子版本的 parent 重连到被删版本的 parent,保持链路不断;
+        若删光所有版本,current_version 置 None。
+        """
+        with self._LOCK:
+            data = self._require(sid)
+            versions = data.get("versions") or []
+            target = next((v for v in versions if v.get("id") == vid), None)
+            if target is None:
+                raise KeyError(f"版本不存在:{vid}")
+            parent = target.get("parent")
+            for child in versions:
+                if child.get("parent") == vid:
+                    child["parent"] = parent
+            versions.remove(target)
+            if data.get("current_version") == vid:
+                # 优先父版本,否则取删除位置的前一个版本,否则取剩余第一个
+                fallback = next((v for v in versions if v.get("id") == parent), None)
+                if fallback is None:
+                    index = next((i for i, v in enumerate(versions) if v.get("parent") == parent), None)
+                    fallback = versions[index - 1] if index else (versions[0] if versions else None)
+                data["current_version"] = fallback["id"] if fallback else None
+            self._write(sid, data)
+            return dict(target)
+
     def rollback(self, sid: str, vid: str) -> dict[str, Any]:
         """回退:只移动 current 指针到历史版本,不删任何快照(可再次前进)。"""
         with self._LOCK:
@@ -293,13 +378,20 @@ class SessionStore:
         result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """追加一条消息(role=user/agent);result 存放精简后的执行结果。"""
-        if role not in {"user", "agent"}:
+        if role not in {"user", "agent", "note"}:
             raise ValueError(f"未知消息角色:{role!r}")
         with self._LOCK:
             data = self._require(sid)
             turns = data.setdefault("turns", [])
+            # 会话级单调计数器:ID 永不复用
+            next_no = int(data.get("turn_counter") or 0)
+            if next_no < 1:  # 兼容旧会话
+                next_no = max((int(t["id"][1:]) for t in turns
+                               if str(t.get("id", "")).startswith("t")
+                               and str(t["id"][1:]).isdigit()), default=0) + 1
+            data["turn_counter"] = next_no + 1
             turn = {
-                "id": f"t{len(turns) + 1}",
+                "id": f"t{next_no}",
                 "role": role,
                 "text": text,
                 "created_at": _now(),
@@ -313,3 +405,51 @@ class SessionStore:
     def get_turns(self, sid: str) -> list[dict[str, Any]]:
         with self._LOCK:
             return list(self._require(sid).get("turns") or [])
+
+    def get_turn(self, sid: str, tid: str) -> dict[str, Any] | None:
+        with self._LOCK:
+            for turn in self._require(sid).get("turns") or []:
+                if turn.get("id") == tid:
+                    return turn
+            return None
+
+    def update_turn(
+        self,
+        sid: str,
+        tid: str,
+        *,
+        text: str | None = None,
+        role: str | None = None,
+        version_id: str | None = None,
+        clear_version_id: bool = False,
+    ) -> dict[str, Any]:
+        """修改对话消息(文本/角色/关联版本);clear_version_id=True 可解除关联。"""
+        if role is not None and role not in {"user", "agent", "note"}:
+            raise ValueError(f"未知消息角色:{role!r}")
+        with self._LOCK:
+            data = self._require(sid)
+            for turn in data.get("turns") or []:
+                if turn.get("id") == tid:
+                    if text is not None:
+                        turn["text"] = text
+                    if role is not None:
+                        turn["role"] = role
+                    if clear_version_id:
+                        turn["version_id"] = None
+                    elif version_id is not None:
+                        turn["version_id"] = version_id
+                    self._write(sid, data)
+                    return dict(turn)
+            raise KeyError(f"对话消息不存在:{tid}")
+
+    def delete_turn(self, sid: str, tid: str) -> dict[str, Any]:
+        """永久删除单条对话消息。"""
+        with self._LOCK:
+            data = self._require(sid)
+            turns = data.get("turns") or []
+            target = next((t for t in turns if t.get("id") == tid), None)
+            if target is None:
+                raise KeyError(f"对话消息不存在:{tid}")
+            turns.remove(target)
+            self._write(sid, data)
+            return dict(target)

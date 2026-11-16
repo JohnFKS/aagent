@@ -129,7 +129,10 @@ export const api = {
   sessionCreate: (payload) => request('/api/sessions', { method: 'POST', body: payload }),
   sessionGet: (sid) => request(`/api/sessions/${encodeURIComponent(sid)}`, { method: 'GET' }),
   sessionUpdate: (sid, payload) => request(`/api/sessions/${encodeURIComponent(sid)}`, { method: 'PATCH', body: payload }),
-  sessionDelete: (sid) => request(`/api/sessions/${encodeURIComponent(sid)}`, { method: 'DELETE' }),
+  sessionDelete: (sid, permanent = false) => request(
+    `/api/sessions/${encodeURIComponent(sid)}${permanent ? '?permanent=true' : ''}`,
+    { method: 'DELETE' },
+  ),
   // 每轮 = LLM 改码 + 回测,超时放宽到 900s(与 MCP 侧一致)
   sessionTurn: (sid, payload) => request(`/api/sessions/${encodeURIComponent(sid)}/turns`, {
     method: 'POST', body: payload, timeout: 900000,
@@ -150,4 +153,26 @@ export const api = {
     if (to) qs.set('to_version', String(to));
     return request(`/api/sessions/${encodeURIComponent(sid)}/diff?${qs.toString()}`, { method: 'GET' });
   },
+
+  // ---- 历史对话与策略版本的增删改查 ----
+  sessionTurns: (sid) => request(`/api/sessions/${encodeURIComponent(sid)}/turns`, { method: 'GET' }),
+  sessionTurnAdd: (sid, payload) => request(`/api/sessions/${encodeURIComponent(sid)}/turns/message`, {
+    method: 'POST', body: payload,
+  }),
+  sessionTurnUpdate: (sid, tid, payload) => request(
+    `/api/sessions/${encodeURIComponent(sid)}/turns/${encodeURIComponent(tid)}`,
+    { method: 'PATCH', body: payload },
+  ),
+  sessionTurnDelete: (sid, tid) => request(
+    `/api/sessions/${encodeURIComponent(sid)}/turns/${encodeURIComponent(tid)}`,
+    { method: 'DELETE' },
+  ),
+  sessionVersionUpdate: (sid, vid, payload) => request(
+    `/api/sessions/${encodeURIComponent(sid)}/versions/${encodeURIComponent(vid)}`,
+    { method: 'PATCH', body: payload },
+  ),
+  sessionVersionDelete: (sid, vid) => request(
+    `/api/sessions/${encodeURIComponent(sid)}/versions/${encodeURIComponent(vid)}`,
+    { method: 'DELETE' },
+  ),
 };

@@ -154,7 +154,8 @@ python -m pytest tests/
 
 **Tab 4 · 多轮对话工作台(持续迭代同一策略)**
 - 左栏多轮对话:每轮用自然语言要求修改当前策略,Agent 按「改码 → Layer 1 校验 → 回测 → 落版本」执行;
-- 中栏策略全程可见可编辑:编辑器内容即当前版本,手动保存生成 `source=user` 新版本,版本时间线支持查看/回退(历史永不删除);
+- 中栏策略全程可见可编辑:编辑器内容即当前版本,手动保存生成 `source=user` 新版本,版本时间线支持查看/回退/改说明/永久删除单个版本;
+- 左栏对话消息支持编辑、删除、手工追加笔记;会话提供软删除(归档)与**永久删除**(不可恢复)两种入口;
 - 右栏展示回测指标与任意两版本的行级 diff(增删行高亮 + 统一 diff 文本);
 - 会话与版本落盘 `~/.aquant/sessions/<sid>.json`,刷新页面/重启服务不丢;回测区间可随时调整。
 
@@ -237,6 +238,18 @@ python -m aquant validate strategies/demo_ma_cross.py \
 | `/api/sessions/{sid}/versions` | GET | 版本摘要列表;`/{vid}` 取完整快照 |
 | `/api/sessions/{sid}/diff` | GET | `?from_version=v1&to_version=v2` → 行级 diff + unified diff |
 
+**历史对话与版本 CRUD / 永久删除**(均需 readwrite):
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/sessions/{sid}` | DELETE | 默认软删除(移入 `.trash/` 可归档);`?permanent=true` **永久抹除不可恢复** |
+| `/api/sessions/{sid}/turns` | GET | 对话消息列表 |
+| `/api/sessions/{sid}/turns/message` | POST | 手工追加消息(`{role:user/agent/note,text,version_id?}`),不触发 Agent |
+| `/api/sessions/{sid}/turns/{tid}` | GET/PATCH/DELETE | 单条对话的查/改文本角色关联/永久删除 |
+| `/api/sessions/{sid}/versions/{vid}` | PATCH/DELETE | 改版本说明(代码不可原地改)/永久删除版本(当前版本回落父版本) |
+
+对话与版本 ID 采用会话级单调计数器,删除后新增不会复用 ID,避免历史引用错乱。
+
 ```bash
 # 校验(坏策略 → passed=false + findings)
 curl -s -X POST localhost:8000/api/validate -H 'content-type: application/json' \
@@ -275,14 +288,17 @@ python -m aquant.mcp_server.server     # stdio 模式,接 Claude Desktop 等客�
 }
 ```
 
-17 个工具:
+24 个工具:
 - 单次工具(8):`platform_health` / `platform_validate_code` / `platform_run_backtest` /
   `platform_optimize`(AI 自动优化,2 轮常见 3~8 分钟)/ `platform_verify_layered`(防过拟合)/
   `platform_get_kline` / `platform_arena` / `platform_workflow_guide`(不确定如何开始时先调用);
 - 多轮会话(9):`platform_session_create` / `platform_session_list` / `platform_session_get` /
   `platform_session_turn`(按对话要求改码+回测+落版本)/ `platform_session_edit_code` /
   `platform_session_backtest` / `platform_session_rollback` / `platform_session_versions` /
-  `platform_session_diff`(版本变更对比)。
+  `platform_session_diff`(版本变更对比);
+- CRUD 与永久删除(7):`platform_session_purge`(不可恢复) / `platform_session_turns` /
+  `platform_session_turn_add` / `platform_session_turn_update` / `platform_session_turn_delete` /
+  `platform_session_version_update` / `platform_session_version_delete`。
 
 非法参数与非 2xx 一律返回**可读中文错误文本**(不抛异常),让 LLM 自纠。
 
@@ -421,7 +437,7 @@ scripts/upgrade_rqalpha.sh 6.6.0 --apply   # 验证通过后应用到当前 .ven
 │   ├── agents/         # 4 子 agent + orchestrator + experience + prompts
 │   ├── api/            # FastAPI + token_gate + kline + adapter + 会话端点
 │   ├── session/        # 多轮会话/策略版本快照持久化 + 行级 diff
-│   └── mcp_server/     # MCP 薄桥(17 工具)
+│   └── mcp_server/     # MCP 薄桥(24 工具)
 ├── strategies/         # 合规示例 + bad_examples/(校验拦截演示)
 └── tests/              # 283 个测试
 ```

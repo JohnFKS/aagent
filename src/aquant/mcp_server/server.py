@@ -584,6 +584,15 @@ AQ-Platform 外部 agent 工作流指南(七步全流程:
   4) platform_session_diff(sid, from_version, to_version) 对比任意两版变更;
      platform_session_rollback(sid, version_id) 回退(历史永不删除,可再次前进)。
   对话修正以用户要求为准,指标好坏由回测与版本对比判断,不强行采纳"指标更优"版本。
+
+历史对话与版本的增删改查(永久删除需谨慎):
+  - 对话:platform_session_turns 查列表;platform_session_turn_add 手工追加消息;
+    platform_session_turn_update 改消息文本/角色/关联版本;
+    platform_session_turn_delete 永久删除单条消息。
+  - 策略版本:platform_session_versions/vid 查;platform_session_version_update 改说明;
+    platform_session_version_delete 永久删除单个版本(当前版本回落父版本)。
+  - 整个会话:前端「删除」是软删除(移入 .trash/ 可归档);
+    platform_session_purge 是不可恢复的永久删除(连同策略与全部对话)。
 """
 
 
@@ -765,6 +774,115 @@ def platform_session_diff(sid: str, from_version: str, to_version: str | None = 
         params["to_version"] = to_version
     return _session_text(
         "platform_session_diff", "GET", f"/api/sessions/{sid}/diff", params=params
+    )
+
+
+@mcp.tool(
+    description=(
+        "永久删除会话(不可恢复):抹除会话 JSON 与其归档,策略和对话一并删除。"
+        "参数:sid(必填)。与软删除(平台前端的'删除'按钮)不同,此操作不可撤销。"
+    )
+)
+def platform_session_purge(sid: str) -> str:
+    return _session_text(
+        "platform_session_purge", "DELETE", f"/api/sessions/{sid}",
+        params={"permanent": "true"},
+    )
+
+
+@mcp.tool(
+    description=(
+        "列出会话的全部对话消息(增删改查之'查')。参数:sid(必填)。"
+        "返回 turns(id/role/text/version_id/created_at)与 count。"
+    )
+)
+def platform_session_turns(sid: str) -> str:
+    return _session_text("platform_session_turns", "GET", f"/api/sessions/{sid}/turns")
+
+
+@mcp.tool(
+    description=(
+        "手工追加一条对话消息(不触发 Agent 与回测)。参数:sid(必填),"
+        "role(必填,user/agent/note),text(必填),version_id(可选,关联版本)。"
+    )
+)
+def platform_session_turn_add(sid: str, role: str, text: str, version_id: str | None = None) -> str:
+    payload: dict[str, Any] = {"role": role, "text": text}
+    if version_id is not None:
+        payload["version_id"] = version_id
+    return _session_text(
+        "platform_session_turn_add", "POST", f"/api/sessions/{sid}/turns/message",
+        json_payload=payload,
+    )
+
+
+@mcp.tool(
+    description=(
+        "修改历史对话消息(增删改查之'改')。参数:sid(必填),tid(必填,消息 id 如 t1);"
+        "可选 text(新文本)、role(user/agent/note)、version_id、clear_version_id(True 解除关联)。"
+    )
+)
+def platform_session_turn_update(
+    sid: str,
+    tid: str,
+    text: str | None = None,
+    role: str | None = None,
+    version_id: str | None = None,
+    clear_version_id: bool = False,
+) -> str:
+    payload: dict[str, Any] = {"clear_version_id": clear_version_id}
+    for key, value in (("text", text), ("role", role), ("version_id", version_id)):
+        if value is not None:
+            payload[key] = value
+    return _session_text(
+        "platform_session_turn_update", "PATCH", f"/api/sessions/{sid}/turns/{tid}",
+        json_payload=payload,
+    )
+
+
+@mcp.tool(
+    description=(
+        "永久删除单条对话消息。参数:sid(必填),tid(必填,消息 id)。不可恢复。"
+    )
+)
+def platform_session_turn_delete(sid: str, tid: str) -> str:
+    return _session_text(
+        "platform_session_turn_delete", "DELETE", f"/api/sessions/{sid}/turns/{tid}"
+    )
+
+
+@mcp.tool(
+    description=(
+        "修改策略版本的说明/分析/来源(代码不可原地改,改代码用 platform_session_edit_code 新建版本)。"
+        "参数:sid(必填),vid(必填,版本 id 如 v2),可选 message/analysis/source。"
+    )
+)
+def platform_session_version_update(
+    sid: str,
+    vid: str,
+    message: str | None = None,
+    analysis: str | None = None,
+    source: str | None = None,
+) -> str:
+    payload: dict[str, Any] = {}
+    for key, value in (("message", message), ("analysis", analysis), ("source", source)):
+        if value is not None:
+            payload[key] = value
+    return _session_text(
+        "platform_session_version_update", "PATCH", f"/api/sessions/{sid}/versions/{vid}",
+        json_payload=payload,
+    )
+
+
+@mcp.tool(
+    description=(
+        "永久删除单个策略版本(不可恢复)。参数:sid(必填),vid(必填,版本 id)。"
+        "若删的是当前版本,current 自动回落到父版本;历史 diff 会随版本删除而消失。"
+    )
+)
+def platform_session_version_delete(sid: str, vid: str) -> str:
+    return _session_text(
+        "platform_session_version_delete", "DELETE", f"/api/sessions/{sid}/versions/{vid}"
     )
 
 

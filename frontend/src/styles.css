@@ -3044,3 +3044,71 @@ input[type='date']:focus {
   border-radius: var(--radius-sm);
   padding: 8px;
 }
+
+/* 历史对话/版本 CRUD 与永久删除 */
+.btn-danger {
+  color: var(--up);
+  border: 1px solid var(--up);
+  background: var(--up-soft);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--up);
+  color: #fff;
+}
+.conv-composer-buttons {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.conv-msg-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 5px;
+  justify-content: flex-end;
+}
+.conv-mini-btn {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 1px 7px;
+  cursor: pointer;
+}
+.conv-mini-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.conv-mini-danger:hover:not(:disabled) {
+  color: var(--up);
+  border-color: var(--up);
+}
+.conv-turn-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 5px;
+}
+.conv-turn-edit textarea {
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+}
+.conv-turn-edit .btn {
+  align-self: flex-end;
+}
+.version-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 4px;
+}
+.version-edit textarea {
+  min-height: 48px;
+  resize: vertical;
+}
+.version-edit-actions {
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+}

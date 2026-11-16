@@ -612,6 +612,13 @@ class TestToolRegistration:
         "platform_session_rollback",
         "platform_session_versions",
         "platform_session_diff",
+        "platform_session_purge",
+        "platform_session_turns",
+        "platform_session_turn_add",
+        "platform_session_turn_update",
+        "platform_session_turn_delete",
+        "platform_session_version_update",
+        "platform_session_version_delete",
     }
 
     def test_eight_tools_registered_with_description(self):
@@ -621,10 +628,10 @@ class TestToolRegistration:
         for tool in tools:
             assert tool.description  # 每个 tool 都有中文描述
 
-    def test_tools_list_count_is_17(self):
-        """tools/list 数量 = 17(8 个既有工具 + 9 个多轮会话工具)。"""
+    def test_tools_list_count_is_24(self):
+        """tools/list 数量 = 24(8 个单次工具 + 16 个会话/CRUD 工具)。"""
         tools = asyncio.run(server.mcp.list_tools())
-        assert len(tools) == 17
+        assert len(tools) == 24
 
     def test_long_running_tools_have_time_expectations_in_description(self):
         """optimize/verify/arena 的 description 必须写明耗时预期,供外部 agent 决策。"""

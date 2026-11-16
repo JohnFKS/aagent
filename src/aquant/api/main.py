@@ -552,6 +552,25 @@ class SessionRollbackRequest(BaseModel):
     version_id: str = Field(description="目标历史版本 id(如 v2)")
 
 
+class SessionTurnUpdateRequest(BaseModel):
+    text: str | None = Field(default=None, description="修改后的对话文本")
+    role: str | None = Field(default=None, description="角色 user/agent(可选)")
+    version_id: str | None = Field(default=None, description="关联版本 id(可选)")
+    clear_version_id: bool = Field(default=False, description="True 则解除与版本的关联")
+
+
+class SessionTurnCreateRequest(BaseModel):
+    role: str = Field(description="消息角色:user / agent / note(笔记)")
+    text: str = Field(min_length=1, description="消息文本")
+    version_id: str | None = Field(default=None, description="可选关联版本 id")
+
+
+class SessionVersionUpdateRequest(BaseModel):
+    message: str | None = Field(default=None, description="修改后的版本说明")
+    analysis: str | None = Field(default=None, description="修改后的分析说明")
+    source: str | None = Field(default=None, description="版本来源(initial/agent/user/rollback)")
+
+
 def _get_store(request: Request):
     """会话仓库依赖:app.state.sessions 可注入临时目录(测试),缺省 ~/.aquant/sessions。"""
     if getattr(request.app.state, "sessions", None) is None:
@@ -642,10 +661,13 @@ def update_session(sid: str, req: SessionUpdateRequest, request: Request) -> dic
 
 
 @app.delete("/api/sessions/{sid}", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
-def delete_session(sid: str, request: Request) -> dict[str, Any]:
-    if not _get_store(request).delete(sid):
+def delete_session(request: Request, sid: str, permanent: bool = False) -> dict[str, Any]:
+    """删除会话:默认软删除(移入 .trash/ 可归档);permanent=true 永久抹除不可恢复。"""
+    store = _get_store(request)
+    removed = store.purge(sid) if permanent else store.delete(sid)
+    if not removed:
         raise HTTPException(status_code=404, detail=f"会话不存在:{sid}")
-    return {"ok": True, "id": sid}
+    return {"ok": True, "id": sid, "permanent": permanent}
 
 
 @app.post("/api/sessions/{sid}/turns", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
@@ -718,6 +740,67 @@ def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[st
     outcome["version_id"] = version_id
     outcome["session"] = store.get(sid)
     return outcome
+
+
+# ---- 对话消息 CRUD(历史对话可增删改查) -----------------------------------
+@app.get("/api/sessions/{sid}/turns", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def list_turns(sid: str, request: Request) -> dict[str, Any]:
+    _require_session(request, sid)
+    turns = _get_store(request).get_turns(sid)
+    return {"turns": turns, "count": len(turns)}
+
+
+@app.get("/api/sessions/{sid}/turns/{tid}", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def get_turn(sid: str, tid: str, request: Request) -> dict[str, Any]:
+    _require_session(request, sid)
+    turn = _get_store(request).get_turn(sid, tid)
+    if turn is None:
+        raise HTTPException(status_code=404, detail=f"对话消息不存在:{tid}")
+    return {"turn": turn}
+
+
+@app.post("/api/sessions/{sid}/turns/message", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def create_turn_message(sid: str, req: SessionTurnCreateRequest, request: Request) -> dict[str, Any]:
+    """手工追加一条对话消息(role=user/agent/note),不触发 Agent 与回测。"""
+    _require_session(request, sid)
+    store = _get_store(request)
+    if req.version_id and store.get_version(sid, req.version_id) is None:
+        raise HTTPException(status_code=404, detail=f"关联版本不存在:{req.version_id}")
+    try:
+        turn = store.add_turn(
+            sid, role=req.role, text=req.text, version_id=req.version_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"turn": turn, "session": store.get(sid)}
+
+
+@app.patch("/api/sessions/{sid}/turns/{tid}", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def update_turn(sid: str, tid: str, req: SessionTurnUpdateRequest, request: Request) -> dict[str, Any]:
+    _require_session(request, sid)
+    store = _get_store(request)
+    if req.version_id and store.get_version(sid, req.version_id) is None:
+        raise HTTPException(status_code=404, detail=f"关联版本不存在:{req.version_id}")
+    try:
+        turn = store.update_turn(
+            sid, tid, text=req.text, role=req.role,
+            version_id=req.version_id, clear_version_id=req.clear_version_id,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404 if isinstance(exc, KeyError) else 422,
+                            detail=str(exc)) from exc
+    return {"turn": turn, "session": store.get(sid)}
+
+
+@app.delete("/api/sessions/{sid}/turns/{tid}", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def delete_turn(sid: str, tid: str, request: Request) -> dict[str, Any]:
+    _require_session(request, sid)
+    store = _get_store(request)
+    try:
+        removed = store.delete_turn(sid, tid)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "turn": removed, "session": store.get(sid)}
 
 
 @app.put("/api/sessions/{sid}/code", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
@@ -797,6 +880,33 @@ def get_version(sid: str, vid: str, request: Request) -> dict[str, Any]:
     if version is None:
         raise HTTPException(status_code=404, detail=f"版本不存在:{vid}")
     return {"version": version}
+
+
+@app.patch("/api/sessions/{sid}/versions/{vid}", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def update_version(sid: str, vid: str, req: SessionVersionUpdateRequest, request: Request) -> dict[str, Any]:
+    """修改版本说明/分析/来源(代码快照不可原地改,改代码请用 PUT /code 新建版本)。"""
+    _require_session(request, sid)
+    store = _get_store(request)
+    try:
+        version = store.update_version_meta(
+            sid, vid, message=req.message, analysis=req.analysis, source=req.source,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404 if isinstance(exc, KeyError) else 422,
+                            detail=str(exc)) from exc
+    return {"version": version, "session": store.get(sid)}
+
+
+@app.delete("/api/sessions/{sid}/versions/{vid}", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def delete_version(sid: str, vid: str, request: Request) -> dict[str, Any]:
+    """永久删除单个策略版本;若为当前版本则 current 回落到父版本。"""
+    _require_session(request, sid)
+    store = _get_store(request)
+    try:
+        removed = store.delete_version(sid, vid)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "version": removed, "session": store.get(sid)}
 
 
 @app.get("/api/sessions/{sid}/diff", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
