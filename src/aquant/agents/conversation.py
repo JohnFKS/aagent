@@ -262,8 +262,11 @@ def run_edit_turn(
             series: list[dict[str, Any]] = []
             break
 
+        exec_kw: dict[str, Any] = {}
+        if cash is not None:
+            exec_kw["cash"] = cash
         execution = BacktestAgent(runner, validation_agent).execute(
-            code, start, end, run_config=run_config
+            code, start, end, run_config=run_config, **exec_kw
         )
         if execution["rejected"]:
             steps.append({

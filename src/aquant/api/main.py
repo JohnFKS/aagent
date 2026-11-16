@@ -174,9 +174,13 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
     )
     agent = BacktestAgent(runner=_get_runner(request))
     try:
-        # 执行配置:overrides 提供时经 runner 透传给 run_backtest(mod_overrides);
-        # 未提供时不附加 kw,与既有调用完全一致
-        exec_kw: dict[str, Any] = {"mod_overrides": req.overrides} if req.overrides else {}
+        # 执行配置:cash 与 overrides 都需透传给 runner(run_config 仅用于校验,
+        # BacktestAgent.execute 不会自动从中提取 cash)。
+        exec_kw: dict[str, Any] = {}
+        if req.overrides:
+            exec_kw["mod_overrides"] = req.overrides
+        if req.cash is not None:
+            exec_kw["cash"] = req.cash
         outcome = agent.execute(req.code, req.start, req.end, run_config=run_config, **exec_kw)
     except FileNotFoundError as exc:
         return JSONResponse(status_code=400, content={"detail": BUNDLE_GUIDANCE, "reason": str(exc)})
@@ -613,7 +617,12 @@ def _backtest_version(
         payload["summary"] = verifier.summarize(verdict)
         raise HTTPException(status_code=422, detail={"message": "策略校验未通过,拒绝回测", "verdict": payload})
     try:
-        outcome = BacktestAgent(_get_runner(request)).execute(code, start, end, run_config=run_config)
+        exec_kw: dict[str, Any] = {}
+        if session.get("cash") is not None:
+            exec_kw["cash"] = session["cash"]
+        outcome = BacktestAgent(_get_runner(request)).execute(
+            code, start, end, run_config=run_config, **exec_kw
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=f"{BUNDLE_GUIDANCE} 原始错误:{exc}") from exc
     if outcome["rejected"]:
@@ -694,6 +703,7 @@ def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[st
             outcome = run_conversation(
                 req.text, session["start"], session["end"],
                 llm=llm, runner=runner, experience=experience,
+                cash=session.get("cash"),
             )
             outcome.setdefault("analysis", "首轮由 Agent 根据需求生成初始策略。")
         else:

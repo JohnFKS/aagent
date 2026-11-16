@@ -45,6 +45,7 @@ def run_conversation(
     llm: LLMClient | None = None,
     runner: Runner | None = None,
     experience: ExperienceStore | None = None,
+    cash: float | None = None,
 ) -> dict[str, Any]:
     """执行一次完整对话编排,返回 JSON 友好的结果 dict。
 
@@ -120,7 +121,12 @@ def run_conversation(
             portfolio_series: list | None = []
             break
 
-        outcome = BacktestAgent(runner, validation_agent).execute(code, start, end, run_config=run_config)
+        exec_kw: dict[str, Any] = {}
+        if cash is not None:
+            exec_kw["cash"] = cash
+        outcome = BacktestAgent(runner, validation_agent).execute(
+            code, start, end, run_config=run_config, **exec_kw
+        )
         if outcome["rejected"]:
             steps.append({"step": "backtest", "skipped": False, "rejected": True,
                           "summary": outcome["reason"]})
