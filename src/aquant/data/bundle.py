@@ -49,22 +49,14 @@ import h5py
 import numpy as np
 import pandas as pd
 
+from aquant.compat import BENCHMARK_FALLBACK_OID, YIELD_CURVE_TENORS, current_profile
 from aquant.data.adjust import date_to_int14, ex_cum_factor_from
 from aquant.data.limits import price_limits
 
-# dtype 事实来源:直接引用 rqalpha storages 类常量(测试亦 import 同一常量比对)
-from rqalpha.data.base_data_source.storages import (
-    INDXDayBarStore,
-    SecuritiesDayBarStore,
-)
-
 __all__ = ["build_bundle", "BENCHMARK_FALLBACK_OID", "YIELD_CURVE_TENORS"]
 
-# BaseDataSource.available_data_range 硬编码查询的基准指数 oid
-BENCHMARK_FALLBACK_OID = "000001.XSHG"
-
-# 与 rqalpha.utils.risk_free_helper.YIELD_CURVE_TENORS 对齐的常用 tenor 列
-YIELD_CURVE_TENORS: tuple[str, ...] = ("0S", "1M", "3M", "6M", "1Y", "2Y", "3Y", "5Y", "10Y")
+# dtype 事实来源已收口到 aquant.compat:换版本只需切换 profile,
+# 本模块与 build_bundle 的自检不再直接依赖 rqalpha 私有类常量。
 
 YIELD_RATE = 0.02
 
@@ -160,7 +152,7 @@ def _synthetic_index_bars(data: dict, calendar: pd.DatetimeIndex) -> np.ndarray:
 
     仅用于 available_data_range 的区间收敛与基准对照,不参与撮合(volume=0)。
     """
-    dtype = INDXDayBarStore.DEFAULT_DTYPE
+    dtype = current_profile().index_bar_dtype
     norm = {f: [] for f in ("open", "high", "low", "close")}
     for df in data["daily"].values():
         if df.empty:
@@ -206,7 +198,7 @@ def _stock_bars_with_limits(
       时,写超宽占位值(见 _wide_limits 注释);
     - 停牌日不写行(suspended 集合内的日期直接剔除)。
     """
-    dtype = SecuritiesDayBarStore.DEFAULT_DTYPE
+    dtype = current_profile().stock_bar_dtype
     susp = set(suspended)
     keep = [d for d in df.index if _int8(d) not in susp]
     df = df.loc[keep]

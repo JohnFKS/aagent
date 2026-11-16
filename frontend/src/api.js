@@ -123,4 +123,31 @@ export const api = {
     if (end) qs.set('end', end);
     return request(`/api/kline?${qs.toString()}`, { method: 'GET', timeout: DEFAULT_TIMEOUT });
   },
+
+  // ---- 多轮对话会话:策略全程可见/可编辑/可回退/可对比 ----
+  sessions: () => request('/api/sessions', { method: 'GET' }),
+  sessionCreate: (payload) => request('/api/sessions', { method: 'POST', body: payload }),
+  sessionGet: (sid) => request(`/api/sessions/${encodeURIComponent(sid)}`, { method: 'GET' }),
+  sessionUpdate: (sid, payload) => request(`/api/sessions/${encodeURIComponent(sid)}`, { method: 'PATCH', body: payload }),
+  sessionDelete: (sid) => request(`/api/sessions/${encodeURIComponent(sid)}`, { method: 'DELETE' }),
+  // 每轮 = LLM 改码 + 回测,超时放宽到 900s(与 MCP 侧一致)
+  sessionTurn: (sid, payload) => request(`/api/sessions/${encodeURIComponent(sid)}/turns`, {
+    method: 'POST', body: payload, timeout: 900000,
+  }),
+  sessionEditCode: (sid, payload) => request(`/api/sessions/${encodeURIComponent(sid)}/code`, {
+    method: 'PUT', body: payload, timeout: 300000,
+  }),
+  sessionBacktest: (sid) => request(`/api/sessions/${encodeURIComponent(sid)}/backtest`, {
+    method: 'POST', timeout: 300000,
+  }),
+  sessionRollback: (sid, payload) => request(`/api/sessions/${encodeURIComponent(sid)}/rollback`, {
+    method: 'POST', body: payload,
+  }),
+  sessionVersions: (sid) => request(`/api/sessions/${encodeURIComponent(sid)}/versions`, { method: 'GET' }),
+  sessionVersion: (sid, vid) => request(`/api/sessions/${encodeURIComponent(sid)}/versions/${encodeURIComponent(vid)}`, { method: 'GET' }),
+  sessionDiff: (sid, from, to) => {
+    const qs = new URLSearchParams({ from_version: String(from ?? '') });
+    if (to) qs.set('to_version', String(to));
+    return request(`/api/sessions/${encodeURIComponent(sid)}/diff?${qs.toString()}`, { method: 'GET' });
+  },
 };

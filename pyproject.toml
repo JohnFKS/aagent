@@ -8,7 +8,9 @@ dependencies = [
     "pandas>=2.0",
     "numpy>=1.26",
     "h5py>=3.8",
-    "pyarrow>=14.0",
+    # pyarrow >=19 开始要求 NumPy>=2,与 rqalpha 6.5.0 锁定的 numpy 1.26 冲突,
+    # 上界锁在 18.x(实测 18.1.0 与 numpy 1.26.4 / pandas 2.2.3 兼容)。
+    "pyarrow>=14.0,<19",
     "pyyaml>=6.0",
     "click>=8.1",
     "fastapi>=0.110",

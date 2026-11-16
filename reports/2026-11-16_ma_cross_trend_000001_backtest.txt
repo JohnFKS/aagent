@@ -1,0 +1,103 @@
+=== tools/call platform_run_backtest (isError=False) ===
+{
+  "passed": true,
+  "verdict": {
+    "passed": true,
+    "error_count": 0,
+    "warning_count": 0,
+    "findings": [
+      {
+        "rule": "cfg.injected_default",
+        "severity": "info",
+        "message": "平台注入保守默认参数 mod.sys_simulation.slippage=0.002(比例滑点,消除零滑点收益虚高)",
+        "detail": {
+          "key": "mod.sys_simulation.slippage",
+          "value": "0.002"
+        }
+      },
+      {
+        "rule": "cfg.injected_default",
+        "severity": "info",
+        "message": "平台注入保守默认参数 mod.sys_simulation.volume_percent=0.2(单K线成交量占比限制)",
+        "detail": {
+          "key": "mod.sys_simulation.volume_percent",
+          "value": "0.2"
+        }
+      },
+      {
+        "rule": "cfg.injected_default",
+        "severity": "info",
+        "message": "平台注入保守默认参数 mod.sys_transaction_cost.stock_commission_multiplier=1.0(真实佣金(万八基准))",
+        "detail": {
+          "key": "mod.sys_transaction_cost.stock_commission_multiplier",
+          "value": "1.0"
+        }
+      },
+      {
+        "rule": "cfg.injected_default",
+        "severity": "info",
+        "message": "平台注入保守默认参数 mod.sys_transaction_cost.tax_multiplier=1.0(真实印花税(千一单边))",
+        "detail": {
+          "key": "mod.sys_transaction_cost.tax_multiplier",
+          "value": "1.0"
+        }
+      },
+      {
+        "rule": "cfg.injected_default",
+        "severity": "info",
+        "message": "平台注入保守默认参数 mod.sys_accounts.stock_t1=True(A股 T+1 规则)",
+        "detail": {
+          "key": "mod.sys_accounts.stock_t1",
+          "value": "True"
+        }
+      },
+      {
+        "rule": "cfg.injected_default",
+        "severity": "info",
+        "message": "平台注入保守默认参数 mod.sys_simulation.price_limit=True(涨跌停撮合限制)",
+        "detail": {
+          "key": "mod.sys_simulation.price_limit",
+          "value": "True"
+        }
+      },
+      {
+        "rule": "cfg.injected_default",
+        "severity": "info",
+        "message": "平台注入保守默认参数 mod.sys_simulation.volume_limit=True(成交量限制开关)",
+        "detail": {
+          "key": "mod.sys_simulation.volume_limit",
+          "value": "True"
+        }
+      },
+      {
+        "rule": "cfg.injected_default",
+        "severity": "info",
+        "message": "平台注入保守默认参数 mod.sys_simulation.signal=False(禁止信号模式(必须真实撮合))",
+        "detail": {
+          "key": "mod.sys_simulation.signal",
+          "value": "False"
+        }
+      }
+    ]
+  },
+  "metrics": {
+    "start": "2023-01-03",
+    "end": "2024-06-28",
+    "total_returns": -0.10228223080320031,
+    "annualized_returns": -0.07294285746749896,
+    "benchmark_total_returns": null,
+    "sharpe": -0.6358776554093867,
+    "max_drawdown": 0.22513541524010455,
+    "volatility": 0.13600199622234319,
+    "alpha": null,
+    "beta": null,
+    "turnover": 24.74834242250631,
+    "win_rate": 0.1309192200557103,
+    "total_commission": 10592.15,
+    "total_tax": 3287.95,
+    "trading_days": 359,
+    "unsafe": false,
+    "elapsed_seconds": 8.67
+  },
+  "trades_count": 16
+}

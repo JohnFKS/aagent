@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Header from './components/Header.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
+import ConversationPanel from './components/ConversationPanel.jsx';
 import ValidatePanel from './components/ValidatePanel.jsx';
 import ArenaPanel from './components/ArenaPanel.jsx';
 import StudioPanel from './components/StudioPanel.jsx';
@@ -20,6 +21,7 @@ const TOAST_ICON = { error: '✗', success: '✓', warn: '⚠', info: 'ℹ' };
 // 顶部 Tab 定义(key → 文案);chat 为默认 Tab(保持原两栏页)
 const TABS = [
   { key: 'chat', label: '策略对话', hint: '对话生成策略 + 校验台' },
+  { key: 'conversation', label: '多轮对话工作台', hint: '持续迭代同一策略:可见/可编辑/可回退/可对比' },
   { key: 'arena', label: '多策略竞技场', hint: '多候选同场回测排名' },
   { key: 'studio', label: '策略工坊', hint: '手动模式:自写代码、自选回测与分析' },
 ];
@@ -110,7 +112,12 @@ export default function App() {
         <ValidatePanel notify={notify} seed={seed} />
       </main>
 
-      {/* Tab 二:多策略竞技场(对话 Tab 下隐藏但保持挂载,后台回测结果不丢) */}
+      {/* Tab 二:多轮对话工作台(会话/版本/编辑器常驻挂载,切换不丢状态) */}
+      <section className={`conv-layout-wrap ${tab === 'conversation' ? '' : 'layout-hidden'}`}>
+        <ConversationPanel notify={notify} />
+      </section>
+
+      {/* Tab 三:多策略竞技场(对话 Tab 下隐藏但保持挂载,后台回测结果不丢) */}
       <section className={`arena-layout ${tab === 'arena' ? '' : 'layout-hidden'}`}>
         <ArenaPanel notify={notify} />
       </section>

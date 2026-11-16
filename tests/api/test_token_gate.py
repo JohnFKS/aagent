@@ -364,6 +364,8 @@ class TestScopeRuleTable:
             "/api/kline",
             "/api/verify",
             "/api/optimize",
+            "/api/sessions",
+            "/api/sessions/*",
         }
 
     def test_scope_allows_matrix(self):
@@ -376,7 +378,10 @@ class TestScopeRuleTable:
         for path in ("/api/validate", "/api/backtest", "/api/chat", "/api/arena"):
             assert token_gate._scope_allows("readwrite", readonly_level, path) is True
             assert token_gate._scope_allows("readwrite", readwrite_level, path) is True
-        # 规则表未登记的路径默认拒绝(新端点忘登记 → fail-closed)
+        # 会话族动态子路径由 "/*" 前缀规则覆盖,未登记路径仍 fail-closed
+        assert token_gate._scope_allows("readwrite", readwrite_level, "/api/sessions") is True
+        assert token_gate._scope_allows("readwrite", readwrite_level, "/api/sessions/s_abc/turns") is True
+        assert token_gate._scope_allows("readonly", readonly_level, "/api/sessions/s_abc/turns") is False
         assert token_gate._scope_allows("readwrite", readwrite_level, "/api/future") is False
 
     def test_factory_rejects_unknown_scope(self):

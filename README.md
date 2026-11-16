@@ -152,6 +152,12 @@ python -m pytest tests/
   - 手动模式与 Agent 模式殊途同归:**所有代码都过同一套四层校验**;
   - **对话生成的代码可"送入策略工坊编辑"再加工**(编辑器 ↔ Agent 交替迭代)。
 
+**Tab 4 · 多轮对话工作台(持续迭代同一策略)**
+- 左栏多轮对话:每轮用自然语言要求修改当前策略,Agent 按「改码 → Layer 1 校验 → 回测 → 落版本」执行;
+- 中栏策略全程可见可编辑:编辑器内容即当前版本,手动保存生成 `source=user` 新版本,版本时间线支持查看/回退(历史永不删除);
+- 右栏展示回测指标与任意两版本的行级 diff(增删行高亮 + 统一 diff 文本);
+- 会话与版本落盘 `~/.aquant/sessions/<sid>.json`,刷新页面/重启服务不丢;回测区间可随时调整。
+
 ## AI 自动优化闭环
 
 对**任何策略**(手写或 Agent 生成)发起自动优化:每轮 = 基线回测 → **五类规则自动诊断**
@@ -218,6 +224,19 @@ python -m aquant validate strategies/demo_ma_cross.py \
 | `/api/arena` | POST | readwrite | 多策略竞技场:`{"candidates": [{"name","code"}...1~6], "start", "end"}` |
 | `/api/kline` | GET | readonly | K 线真实价:`?oid=000001.XSHE&start=...&end=...` |
 
+**多轮对话会话端点**(策略全程可见/可编辑/可回退/可对比,均需 readwrite):
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/sessions` | GET/POST | 列出会话摘要 / 新建会话(`{start,end,code?,title?,cash?}`) |
+| `/api/sessions/{sid}` | GET/PATCH/DELETE | 会话全量(对话+版本) / 更新元信息 / 删除 |
+| `/api/sessions/{sid}/turns` | POST | 一轮对话:`{text,backtest?}` → Agent 改码+校验+回测+落版本 |
+| `/api/sessions/{sid}/code` | PUT | 手动编辑代码:`{code,message?,backtest?}` → 新版本 |
+| `/api/sessions/{sid}/backtest` | POST | 回测当前版本(原地更新指标,不新增版本) |
+| `/api/sessions/{sid}/rollback` | POST | 回退:`{version_id}`,历史版本永不删除 |
+| `/api/sessions/{sid}/versions` | GET | 版本摘要列表;`/{vid}` 取完整快照 |
+| `/api/sessions/{sid}/diff` | GET | `?from_version=v1&to_version=v2` → 行级 diff + unified diff |
+
 ```bash
 # 校验(坏策略 → passed=false + findings)
 curl -s -X POST localhost:8000/api/validate -H 'content-type: application/json' \
@@ -256,9 +275,15 @@ python -m aquant.mcp_server.server     # stdio 模式,接 Claude Desktop 等客�
 }
 ```
 
-8 个工具:`platform_health` / `platform_validate_code` / `platform_run_backtest` /
-`platform_optimize`(AI 自动优化,2 轮常见 3~8 分钟)/ `platform_verify_layered`(防过拟合)/
-`platform_get_kline` / `platform_arena` / `platform_workflow_guide`(不确定如何开始时先调用)。
+17 个工具:
+- 单次工具(8):`platform_health` / `platform_validate_code` / `platform_run_backtest` /
+  `platform_optimize`(AI 自动优化,2 轮常见 3~8 分钟)/ `platform_verify_layered`(防过拟合)/
+  `platform_get_kline` / `platform_arena` / `platform_workflow_guide`(不确定如何开始时先调用);
+- 多轮会话(9):`platform_session_create` / `platform_session_list` / `platform_session_get` /
+  `platform_session_turn`(按对话要求改码+回测+落版本)/ `platform_session_edit_code` /
+  `platform_session_backtest` / `platform_session_rollback` / `platform_session_versions` /
+  `platform_session_diff`(版本变更对比)。
+
 非法参数与非 2xx 一律返回**可读中文错误文本**(不抛异常),让 LLM 自纠。
 
 ## 外部 Agent 模式(external-agent/)
@@ -352,12 +377,26 @@ export AQUANT_MCP_TOKEN='tkn_xxx'
 | `AQUANT_LLM_TIMEOUT` | `120` | LLM 请求超时(秒) |
 | `AQUANT_MCP_TOKEN` / `AQUANT_MCP_TOKENS` | - | token 闸门(未设=开放) |
 | `AQUANT_ALLOW_UNSAFE` | - | `=1` 时豁免校验 error(结果打 unsafe 标,仅供研究) |
+| `AQUANT_RQALPHA_ALLOW` | - | `=1` 时临时放行未登记的 RQAlpha 版本(仅供隔离验证;正式升级见下方脚本) |
 
 ## 测试与质量
 
 ```bash
 python -m pytest tests/        # 283 个测试(单元/E2E/契约/GUI 辅助)
 ```
+
+**升级 RQAlpha(无缝/可回滚)**:版本适配事实已收口到 `src/aquant/compat.py`,
+`/api/health` 的 `rqalpha` 字段显示已装版本与兼容清单。新版本先在隔离环境完成
+契约门禁 + 全量回归,通过后才写 `requirements.lock.txt`:
+
+```bash
+scripts/upgrade_rqalpha.sh                 # 自动取 PyPI 最新版验证
+scripts/upgrade_rqalpha.sh 6.6.0           # 指定版本验证
+scripts/upgrade_rqalpha.sh 6.6.0 --apply   # 验证通过后应用到当前 .venv(旧锁自动备份)
+```
+
+版本变更后必须重建 bundle(新旧目录并存),用 `AQUANT_BUNDLE_PATH` 切换并对比关键指标;
+回滚执行脚本输出中提示的 `requirements.lock.txt.bak` 恢复命令即可。
 
 - **端到端**:合成 bundle 真实跑通 rqalpha 回测,断言成本生效、成交量限制生效;
 - **真实数据链路**:东财→新浪降级、复权因子单调性闸门、bundle 逐字段与 rqalpha
@@ -380,8 +419,9 @@ python -m pytest tests/        # 283 个测试(单元/E2E/契约/GUI 辅助)
 │   ├── runner/         # RQAlpha 子进程封装 + key_metrics
 │   ├── verify/         # Layer 4:pipeline/metrics/arena
 │   ├── agents/         # 4 子 agent + orchestrator + experience + prompts
-│   ├── api/            # FastAPI + token_gate + kline + adapter
-│   └── mcp_server/     # MCP 薄桥(3 工具)
+│   ├── api/            # FastAPI + token_gate + kline + adapter + 会话端点
+│   ├── session/        # 多轮会话/策略版本快照持久化 + 行级 diff
+│   └── mcp_server/     # MCP 薄桥(17 工具)
 ├── strategies/         # 合规示例 + bad_examples/(校验拦截演示)
 └── tests/              # 283 个测试
 ```
@@ -410,8 +450,9 @@ python -m pytest tests/        # 283 个测试(单元/E2E/契约/GUI 辅助)
 可用竞技场多候选对比,或放宽/更换策略逻辑后用 Layer 4 验证。
 
 **Q: rqalpha 版本兼容?**
-平台针对 **6.5.0** 源码核实并适配(bundle 格式、`get_position` 签名、summary 键、
-trades 为 DataFrame 等);其他版本不保证。
+默认支持 **6.5.0**(bundle 格式、`get_position` 签名、summary 键、trades 为 DataFrame
+等已逐条核实);适配事实集中在 `aquant.compat`,新版本按上文"升级 RQAlpha"流程
+先验证再放行,未登记版本会在回测入口 fail-fast。
 
 **Q: 为什么禁止零滑点回测?**
 实盘不存在零冲击成交,零滑点是收益虚高的第一大来源;同理佣金/印花税/T+1/涨跌停

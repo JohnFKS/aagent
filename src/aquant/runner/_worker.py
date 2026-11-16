@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import sys
 
+from aquant.compat import check_rqalpha_version
+
 
 def main() -> None:
     if len(sys.argv) != 3:
@@ -19,6 +21,8 @@ def main() -> None:
     strategy_file, config_file = sys.argv[1], sys.argv[2]
     with open(config_file, encoding="utf-8") as f:
         config = json.load(f)
+
+    check_rqalpha_version()  # 版本不受支持时先失败,避免进入撮合后才崩
 
     from rqalpha import run_file
 

@@ -23,7 +23,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from aquant import __version__
+from aquant.compat import version_report
 from aquant.agents.backtest_agent import BacktestAgent
+from aquant.agents.conversation import run_edit_turn
 from aquant.agents.llm import LLMAPIError, LLMClient, make_llm
 from aquant.agents.orchestrator import run_conversation
 from aquant.agents.validation_agent import ValidationAgent
@@ -110,9 +112,9 @@ class BacktestRequest(BaseModel):
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    """健康检查。"""
-    return {"status": "ok", "version": __version__}
+def health() -> dict[str, Any]:
+    """健康检查:附带当前/支持的 RQAlpha 版本,升级前后一眼可核对。"""
+    return {"status": "ok", "version": __version__, "rqalpha": version_report()}
 
 
 @app.post("/api/validate", dependencies=[Depends(require_mcp_token(scope="readonly"))])
@@ -515,6 +517,313 @@ def optimize(req: OptimizeRequest, request: Request) -> dict[str, Any]:
     except LLMAPIError as exc:
         # LLM 网络故障(超时/断连/限流)是外部依赖问题,502 + 中文指引而非 500
         return JSONResponse(status_code=502, content={"detail": "LLM 服务暂时不可用,请稍后重试。", "reason": str(exc)})
+
+
+# ---- 多轮对话会话:策略全程可见/可编辑/可回退/可对比 ------------------------
+# 与单轮 /api/chat 并存:会话把每轮对话与每次策略变更都落为版本快照,
+# 回退只移动 current 指针,历史永不删除;diff 由后端 difflib 统一计算。
+class SessionCreateRequest(BaseModel):
+    start: str = Field(description="回测起始日 YYYY-MM-DD")
+    end: str = Field(description="回测结束日 YYYY-MM-DD")
+    code: str | None = Field(default=None, description="初始策略代码(空则首轮由 Agent 生成)")
+    title: str | None = Field(default=None, description="会话标题")
+    cash: float | None = Field(default=None, description="初始资金,缺省用平台默认")
+
+
+class SessionUpdateRequest(BaseModel):
+    title: str | None = None
+    start: str | None = None
+    end: str | None = None
+    cash: float | None = None
+
+
+class SessionTurnRequest(BaseModel):
+    text: str = Field(min_length=1, description="本轮对话要求(自然语言)")
+    backtest: bool = Field(default=True, description="修改后是否立即回测")
+
+
+class SessionCodeRequest(BaseModel):
+    code: str = Field(min_length=1, description="手动编辑后的完整策略源码")
+    message: str | None = Field(default=None, description="本次修改说明")
+    backtest: bool = Field(default=False, description="保存后是否立即回测")
+
+
+class SessionRollbackRequest(BaseModel):
+    version_id: str = Field(description="目标历史版本 id(如 v2)")
+
+
+def _get_store(request: Request):
+    """会话仓库依赖:app.state.sessions 可注入临时目录(测试),缺省 ~/.aquant/sessions。"""
+    if getattr(request.app.state, "sessions", None) is None:
+        from aquant.session import SessionStore
+
+        request.app.state.sessions = SessionStore()
+    return request.app.state.sessions
+
+
+def _require_session(request: Request, sid: str) -> dict[str, Any]:
+    session = _get_store(request).get(sid)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"会话不存在:{sid}")
+    return session
+
+
+def _session_metrics_summary(metrics: dict[str, Any] | None) -> str:
+    if not metrics:
+        return "未取得回测指标。"
+    parts = []
+    for key, label in (("annualized_returns", "年化"), ("sharpe", "夏普"), ("max_drawdown", "回撤")):
+        value = metrics.get(key)
+        if isinstance(value, (int, float)):
+            parts.append(f"{label} {value:.4f}")
+    return " / ".join(parts) or "回测已完成。"
+
+
+def _backtest_version(
+    request: Request, sid: str, code: str, session: dict[str, Any]
+) -> dict[str, Any]:
+    """回测指定代码并把指标写回会话当前版本;校验不过抛 422 结构化错误。"""
+    from aquant.agents.orchestrator import _extract_metrics, _extract_portfolio_series
+
+    start, end = session["start"], session["end"]
+    run_config = build_run_config(start, end, cash=session.get("cash"))
+    verifier = ValidationAgent()
+    verdict = verifier.validate(code, run_config)
+    if verdict.has_error:
+        payload = verdict.to_dict()
+        payload["summary"] = verifier.summarize(verdict)
+        raise HTTPException(status_code=422, detail={"message": "策略校验未通过,拒绝回测", "verdict": payload})
+    try:
+        outcome = BacktestAgent(_get_runner(request)).execute(code, start, end, run_config=run_config)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=f"{BUNDLE_GUIDANCE} 原始错误:{exc}") from exc
+    if outcome["rejected"]:
+        payload = outcome["verdict"].to_dict()
+        payload["summary"] = verifier.summarize(outcome["verdict"])
+        raise HTTPException(status_code=422, detail={"message": outcome["reason"], "verdict": payload})
+    metrics = _extract_metrics(outcome["result"], start, end)
+    series = _extract_portfolio_series(outcome["result"])
+    current_id = str(session.get("current_version") or "")
+    if current_id:
+        _get_store(request).update_version(
+            sid, current_id,
+            metrics=metrics, verdict=verdict.to_dict(),
+            backtest={"portfolio_series": series, "metrics": metrics},
+        )
+    return {"metrics": metrics, "portfolio_series": series, "verdict": verdict.to_dict()}
+
+
+@app.get("/api/sessions", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def list_sessions(request: Request) -> dict[str, Any]:
+    items = _get_store(request).list()
+    return {"sessions": items, "count": len(items)}
+
+
+@app.post("/api/sessions", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def create_session(req: SessionCreateRequest, request: Request) -> dict[str, Any]:
+    session = _get_store(request).create(
+        start=req.start, end=req.end, code=req.code, title=req.title, cash=req.cash
+    )
+    return {"session": session}
+
+
+@app.get("/api/sessions/{sid}", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def get_session(sid: str, request: Request) -> dict[str, Any]:
+    return {"session": _require_session(request, sid)}
+
+
+@app.patch("/api/sessions/{sid}", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def update_session(sid: str, req: SessionUpdateRequest, request: Request) -> dict[str, Any]:
+    _require_session(request, sid)
+    session = _get_store(request).update(
+        sid, title=req.title, start=req.start, end=req.end, cash=req.cash
+    )
+    return {"session": session}
+
+
+@app.delete("/api/sessions/{sid}", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def delete_session(sid: str, request: Request) -> dict[str, Any]:
+    if not _get_store(request).delete(sid):
+        raise HTTPException(status_code=404, detail=f"会话不存在:{sid}")
+    return {"ok": True, "id": sid}
+
+
+@app.post("/api/sessions/{sid}/turns", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[str, Any]:
+    """一轮对话:记录用户消息 → Agent 修改(首轮生成)→ 校验 → 回测 → 落版本与 Agent 消息。"""
+    store = _get_store(request)
+    session = _require_session(request, sid)
+    current = store.current(sid)
+    history = store.get_turns(sid)
+    store.add_turn(sid, role="user", text=req.text)
+
+    llm = _get_llm(request)
+    runner = _get_runner(request) if req.backtest else None
+    experience = getattr(request.app.state, "experience", None)
+    if experience is None:
+        from aquant.agents.experience import ExperienceStore
+
+        experience = ExperienceStore()
+        request.app.state.experience = experience
+
+    try:
+        if current is None:
+            # 首轮无既有策略:走既有从零生成管线(自带 review)。
+            outcome = run_conversation(
+                req.text, session["start"], session["end"],
+                llm=llm, runner=runner, experience=experience,
+            )
+            outcome.setdefault("analysis", "首轮由 Agent 根据需求生成初始策略。")
+        else:
+            outcome = run_edit_turn(
+                req.text, current["code"], history, session["start"], session["end"],
+                llm=llm, runner=runner, experience=experience,
+                metrics=current.get("metrics"), cash=session.get("cash"),
+                backtest=req.backtest,
+            )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=f"{BUNDLE_GUIDANCE} 原始错误:{exc}") from exc
+    except LLMAPIError as exc:
+        raise HTTPException(status_code=502, detail=f"LLM 服务暂时不可用:{exc}") from exc
+
+    version_id = None
+    if outcome.get("ok") and outcome.get("code"):
+        version = store.add_version(
+            sid,
+            code=outcome["code"],
+            source="agent",
+            message=req.text,
+            analysis=outcome.get("analysis") or "",
+            metrics=outcome.get("metrics"),
+            verdict=outcome.get("verdict"),
+            backtest={
+                "steps": outcome.get("steps"),
+                "portfolio_series": outcome.get("portfolio_series"),
+                "report": outcome.get("report"),
+            },
+        )
+        version_id = version["id"]
+        reply = outcome.get("analysis") or "已按需求修改策略。"
+        reply = f"{reply}\n{_session_metrics_summary(outcome.get('metrics'))}"
+    else:
+        reply = f"本轮未采纳修改:{outcome.get('error') or '校验未通过'}"
+    store.add_turn(
+        sid, role="agent", text=reply, version_id=version_id,
+        result={
+            "ok": outcome.get("ok"), "rejected": outcome.get("rejected"),
+            "steps": outcome.get("steps"), "metrics": outcome.get("metrics"),
+            "verdict": outcome.get("verdict"), "error": outcome.get("error"),
+        },
+    )
+    outcome["version_id"] = version_id
+    outcome["session"] = store.get(sid)
+    return outcome
+
+
+@app.put("/api/sessions/{sid}/code", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def edit_session_code(sid: str, req: SessionCodeRequest, request: Request) -> dict[str, Any]:
+    """手动编辑当前策略:校验通过后落为新版本(source=user),可选择立即回测。"""
+    from aquant.validation.validator import validate_strategy
+
+    store = _get_store(request)
+    session = _require_session(request, sid)
+    verdict = validate_strategy(req.code)
+    if verdict.has_error:
+        payload = verdict.to_dict()
+        payload["summary"] = ValidationAgent().summarize(verdict)
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "手动编辑的代码未通过 Layer 1 校验", "verdict": payload},
+        )
+    version = store.add_version(
+        sid, code=req.code, source="user",
+        message=req.message or "手动编辑策略代码",
+        analysis=req.message or "",
+    )
+    backtest_result = None
+    if req.backtest:
+        backtest_result = _backtest_version(request, sid, req.code, store.get(sid))
+    store.add_turn(
+        sid, role="user", text=f"[手动编辑] {req.message or '更新策略代码'}",
+        version_id=version["id"],
+    )
+    return {"version": version, "backtest": backtest_result, "session": store.get(sid)}
+
+
+@app.post("/api/sessions/{sid}/backtest", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def backtest_session(sid: str, request: Request) -> dict[str, Any]:
+    """回测会话当前版本(原地更新指标,不新增版本),便于编辑后快速验证。"""
+    store = _get_store(request)
+    session = _require_session(request, sid)
+    current = store.current(sid)
+    if current is None:
+        raise HTTPException(status_code=400, detail="会话尚无策略代码,请先发起对话或手动编辑。")
+    result = _backtest_version(request, sid, current["code"], session)
+    store.add_turn(
+        sid, role="agent",
+        text=f"[手动回测] {_session_metrics_summary(result['metrics'])}",
+        version_id=current["id"], result=result,
+    )
+    return {**result, "session": store.get(sid)}
+
+
+@app.post("/api/sessions/{sid}/rollback", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def rollback_session(sid: str, req: SessionRollbackRequest, request: Request) -> dict[str, Any]:
+    """回退到历史版本:不删除任何快照,current 指针可再次前进。"""
+    store = _get_store(request)
+    _require_session(request, sid)
+    try:
+        target = store.rollback(sid, req.version_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    store.add_turn(
+        sid, role="agent", text=f"[回退] 已切换到版本 {req.version_id}",
+        version_id=req.version_id,
+    )
+    return {"version": target, "session": store.get(sid)}
+
+
+@app.get("/api/sessions/{sid}/versions", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def list_versions(sid: str, request: Request) -> dict[str, Any]:
+    _require_session(request, sid)
+    versions = _get_store(request).list_versions(sid)
+    return {"versions": versions, "count": len(versions)}
+
+
+@app.get("/api/sessions/{sid}/versions/{vid}", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def get_version(sid: str, vid: str, request: Request) -> dict[str, Any]:
+    _require_session(request, sid)
+    version = _get_store(request).get_version(sid, vid)
+    if version is None:
+        raise HTTPException(status_code=404, detail=f"版本不存在:{vid}")
+    return {"version": version}
+
+
+@app.get("/api/sessions/{sid}/diff", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def diff_versions(
+    request: Request,
+    sid: str,
+    from_version: str,
+    to_version: str | None = None,
+) -> dict[str, Any]:
+    """两个版本的代码对比;to_version 缺省为当前版本。"""
+    from aquant.session import diff_codes
+
+    _require_session(request, sid)
+    store = _get_store(request)
+    to_version = to_version or str(store.get(sid).get("current_version") or "")
+    old = store.get_version(sid, from_version)
+    new = store.get_version(sid, to_version)
+    if old is None or new is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"版本不存在:from={from_version}, to={to_version}",
+        )
+    return diff_codes(
+        old["code"], new["code"],
+        from_label=f"{from_version} {old.get('message', '')}"[:60],
+        to_label=f"{to_version} {new.get('message', '')}"[:60],
+    )
 
 
 # ---- 前端静态托管(单容器部署模式,来源:tick-stock-panel 调研结论)-----------

@@ -68,6 +68,10 @@ SCOPE_ROUTES: dict[str, tuple[str, ...]] = {
         "/api/kline",
         "/api/verify",
         "/api/optimize",
+        # 多轮对话会话族:以 "/*" 结尾的规则按路径前缀匹配(见 _path_allowed),
+        # 覆盖 /api/sessions/{sid}/turns 等动态子路径,新增子端点无需再逐条登记。
+        "/api/sessions",
+        "/api/sessions/*",
     ),
 }
 
@@ -183,11 +187,23 @@ def _reset_rate_limits() -> None:
         _RATE_BUCKETS.clear()
 
 
+def _path_allowed(token_scope: str, path: str) -> bool:
+    """路径匹配:精确命中,或命中以 ``/*`` 结尾的前缀规则。
+
+    ``/api/sessions/*`` 覆盖 ``/api/sessions/<sid>/turns`` 等动态子路径;
+    未登记路径一律拒绝(fail-closed),新端点忘登记不会静默放开。
+    """
+    rules = SCOPE_ROUTES.get(token_scope, ())
+    if path in rules:
+        return True
+    return any(rule.endswith("/*") and path.startswith(rule[:-1]) for rule in rules)
+
+
 def _scope_allows(token_scope: str, required_level: int, path: str) -> bool:
     """双重检查:token 档位不低于端点要求,且路径在 token 档位的规则表集合内。"""
     if _SCOPE_LEVEL.get(token_scope, -1) < required_level:
         return False
-    return path in SCOPE_ROUTES.get(token_scope, ())
+    return _path_allowed(token_scope, path)
 
 
 def require_mcp_token(scope: str = "readwrite") -> Callable[[Request], Any]:

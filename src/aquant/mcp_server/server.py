@@ -573,6 +573,17 @@ AQ-Platform 外部 agent 工作流指南(七步全流程:
   platform_get_kline(oid, start, end)。
   把最终采用的策略代码存入 strategies/,把回测/验证/竞技场结果存入 reports/,
   并向用户汇报最终结论。
+
+多轮对话模式(策略全程可见可编辑可回退,适合持续迭代同一份策略):
+  1) platform_session_create(start, end, code?) 建会话(拿到 sid;
+     code 留空则首轮由 Agent 生成);
+  2) platform_session_turn(sid, text) 逐轮用自然语言要求修改策略,每轮自动
+     校验+回测+落版本;用 platform_session_get(sid) 查看全部对话与版本;
+  3) platform_session_edit_code(sid, code) 手动改写代码也落版本;
+     platform_session_backtest(sid) 可随时回测当前版本;
+  4) platform_session_diff(sid, from_version, to_version) 对比任意两版变更;
+     platform_session_rollback(sid, version_id) 回退(历史永不删除,可再次前进)。
+  对话修正以用户要求为准,指标好坏由回测与版本对比判断,不强行采纳"指标更优"版本。
 """
 
 
@@ -584,6 +595,177 @@ AQ-Platform 外部 agent 工作流指南(七步全流程:
 def platform_workflow_guide() -> str:
     """返回静态七步工作流文本(不转发后端,无网络请求)。"""
     return WORKFLOW_GUIDE
+
+
+# ---------------------------------------------------------------------------
+# 多轮对话会话工具:策略全程可见/可编辑/可回退/可对比
+# ---------------------------------------------------------------------------
+SESSION_HINT = (
+    "400 表示会话尚无策略代码或参数问题(先 platform_session_turn 生成,或 edit_code 写入);"
+    "404 表示会话/版本不存在(先 platform_session_create 或核对 id);"
+    "422 表示策略校验未通过,请按 verdict findings 修正后重试;"
+    "502 表示 LLM 服务故障,稍后重试;401/403/429 为 token 闸门。"
+)
+
+
+def _session_text(
+    tool: str,
+    method: str,
+    path: str,
+    *,
+    json_payload: dict[str, Any] | None = None,
+    params: dict[str, str] | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> str:
+    """会话族工具统一转发:非 2xx / 连接失败均返回可读中文文本,不抛异常。"""
+    try:
+        resp = _request(method, path, json_payload=json_payload, params=params, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - 薄桥契约
+        return _transport_error_text(tool, exc)
+    if resp.is_success:
+        try:
+            return _json_text(resp.json())
+        except Exception:  # noqa: BLE001
+            return f"平台返回了非 JSON 响应(HTTP {resp.status_code}):{resp.text}"
+    return _error_text(tool, method, path, resp, hint=SESSION_HINT)
+
+
+@mcp.tool(
+    description=(
+        "新建多轮对话会话,用于持续迭代同一份策略。参数:start/end(必填,YYYY-MM-DD);"
+        "code(可选,初始策略代码;留空则首轮由 Agent 生成);title(可选);cash(可选)。"
+        "返回 session(含 id、current_version)。后续用 platform_session_turn 继续对话。"
+    )
+)
+def platform_session_create(
+    start: str,
+    end: str,
+    code: str | None = None,
+    title: str | None = None,
+    cash: float | None = None,
+) -> str:
+    payload: dict[str, Any] = {"start": start, "end": end}
+    if code is not None:
+        payload["code"] = code
+    if title is not None:
+        payload["title"] = title
+    if cash is not None:
+        payload["cash"] = cash
+    return _session_text("platform_session_create", "POST", "/api/sessions", json_payload=payload)
+
+
+@mcp.tool(
+    description=(
+        "列出全部会话摘要(id/标题/区间/版本数/消息数/更新时间),按更新时间倒序。"
+        "无参数。拿到 sid 后用 platform_session_get 查看完整对话与版本历史。"
+    )
+)
+def platform_session_list() -> str:
+    return _session_text("platform_session_list", "GET", "/api/sessions")
+
+
+@mcp.tool(
+    description=(
+        "查看会话全量内容:对话消息(turns)、全部策略版本快照(versions,含完整代码/指标/分析)、"
+        "当前版本 current_version。参数:sid(必填,会话 id)。"
+    )
+)
+def platform_session_get(sid: str) -> str:
+    return _session_text("platform_session_get", "GET", f"/api/sessions/{sid}")
+
+
+@mcp.tool(
+    description=(
+        "在会话中发起一轮对话:Agent 根据文字要求修改当前策略 → Layer 1 校验 → 回测 → "
+        "落为新版本并记录对话。参数:sid(必填),text(必填,自然语言修改要求),"
+        "backtest(可选,默认 True;False 则只改代码不回测)。"
+        "耗时预期:每轮 = 1 次 LLM 生成 + 1 次回测,常见 30~180 秒"
+        "(读超时 900s)。返回 ok/steps/analysis/metrics/version_id/session。"
+        "校验不过时 ok=False 且 error 可读;历史版本不会丢失,可随时 platform_session_rollback。"
+    )
+)
+def platform_session_turn(sid: str, text: str, backtest: bool = True) -> str:
+    return _session_text(
+        "platform_session_turn", "POST", f"/api/sessions/{sid}/turns",
+        json_payload={"text": text, "backtest": backtest},
+        timeout=OPTIMIZE_TIMEOUT_SECONDS,
+    )
+
+
+@mcp.tool(
+    description=(
+        "手动编辑会话当前策略(全程可见可编辑):校验通过后落为 source=user 新版本。"
+        "参数:sid(必填),code(必填,完整策略源码),message(可选,修改说明),"
+        "backtest(可选,默认 False;True 则保存后立即回测)。"
+        "返回 version/backtest/session。"
+    )
+)
+def platform_session_edit_code(
+    sid: str,
+    code: str,
+    message: str | None = None,
+    backtest: bool = False,
+) -> str:
+    payload: dict[str, Any] = {"code": code, "backtest": backtest}
+    if message is not None:
+        payload["message"] = message
+    return _session_text(
+        "platform_session_edit_code", "PUT", f"/api/sessions/{sid}/code",
+        json_payload=payload, timeout=VERIFY_TIMEOUT_SECONDS,
+    )
+
+
+@mcp.tool(
+    description=(
+        "对会话当前版本执行回测(原地更新指标,不新增版本)。参数:sid(必填)。"
+        "耗时预期:一次真实回测约数秒~20 秒。返回 metrics/portfolio_series/session。"
+    )
+)
+def platform_session_backtest(sid: str) -> str:
+    return _session_text(
+        "platform_session_backtest", "POST", f"/api/sessions/{sid}/backtest",
+        timeout=VERIFY_TIMEOUT_SECONDS,
+    )
+
+
+@mcp.tool(
+    description=(
+        "回退会话到历史版本:不删除任何快照,current_version 指针可再次前进。"
+        "参数:sid(必填),version_id(必填,如 v2)。返回 version/session。"
+        "回退后可用 platform_session_diff 对比任意两个版本。"
+    )
+)
+def platform_session_rollback(sid: str, version_id: str) -> str:
+    return _session_text(
+        "platform_session_rollback", "POST", f"/api/sessions/{sid}/rollback",
+        json_payload={"version_id": version_id},
+    )
+
+
+@mcp.tool(
+    description=(
+        "列出会话的全部策略版本摘要(含来源/说明/指标/行数,不含完整代码)。"
+        "参数:sid(必填)。配合 platform_session_diff 做变更对比。"
+    )
+)
+def platform_session_versions(sid: str) -> str:
+    return _session_text("platform_session_versions", "GET", f"/api/sessions/{sid}/versions")
+
+
+@mcp.tool(
+    description=(
+        "对比会话中两个版本的策略代码,返回结构化行级 diff(rows: context/add/remove)、"
+        "unified diff 文本与增删统计。参数:sid(必填),from_version(必填),"
+        "to_version(可选,缺省为当前版本)。"
+    )
+)
+def platform_session_diff(sid: str, from_version: str, to_version: str | None = None) -> str:
+    params = {"from_version": from_version}
+    if to_version is not None:
+        params["to_version"] = to_version
+    return _session_text(
+        "platform_session_diff", "GET", f"/api/sessions/{sid}/diff", params=params
+    )
 
 
 def main() -> None:

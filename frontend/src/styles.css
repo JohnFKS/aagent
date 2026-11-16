@@ -2471,3 +2471,576 @@ input[type='date']:focus {
     top: 48px;
   }
 }
+
+/* ============================================================
+   多轮对话工作台:对话 / 可编辑策略 / 版本时间线 / 变更对比
+   ============================================================ */
+.conv-layout-wrap {
+  padding: 12px;
+}
+
+.conv-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.95fr) minmax(380px, 1.25fr) minmax(340px, 1.05fr);
+  gap: 12px;
+  height: calc(100vh - 138px);
+  min-height: 640px;
+}
+
+@media (max-width: 1280px) {
+  .conv-layout {
+    grid-template-columns: 1fr 1fr;
+    height: auto;
+  }
+  .conv-result {
+    grid-column: 1 / -1;
+    max-height: 760px;
+  }
+}
+
+@media (max-width: 860px) {
+  .conv-layout {
+    grid-template-columns: 1fr;
+  }
+  .conv-result {
+    grid-column: auto;
+  }
+  .conv-col {
+    min-height: 520px;
+  }
+}
+
+.conv-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.conv-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--border-soft);
+  flex: none;
+}
+.conv-head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.conv-head-sub,
+.conv-muted {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.conv-badge {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.conv-col input,
+.conv-col select,
+.conv-col textarea {
+  background: var(--panel-inset);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-family: var(--sans);
+  font-size: 12px;
+}
+.conv-col input:focus,
+.conv-col select:focus,
+.conv-col textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.conv-col button:disabled,
+.conv-col input:disabled,
+.conv-col select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.conv-session-bar {
+  display: flex;
+  gap: 6px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  flex: none;
+}
+.conv-session-bar select {
+  flex: 1;
+  min-width: 0;
+}
+.conv-meta-row {
+  display: flex;
+  gap: 6px;
+  padding: 0 10px 9px;
+  border-bottom: 1px solid var(--border-soft);
+  flex: none;
+}
+.conv-meta-row input {
+  min-width: 0;
+}
+.conv-meta-row input[aria-label='会话标题'] {
+  flex: 1;
+}
+
+.conv-messages {
+  flex: 1;
+  min-height: 160px;
+  overflow-y: auto;
+  padding: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.conv-msg {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: var(--bg-soft);
+}
+.conv-msg-user {
+  border-left: 3px solid var(--accent);
+}
+.conv-msg-agent {
+  border-left: 3px solid var(--warn);
+}
+.conv-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.conv-role {
+  font-weight: 700;
+  color: var(--text-dim);
+}
+.conv-time {
+  color: var(--text-faint);
+}
+.conv-vlink {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+.conv-msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-top: 4px;
+  font-size: 13px;
+}
+.conv-msg-metrics {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--ok);
+}
+.conv-msg-error {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--up);
+}
+
+.conv-empty {
+  padding: 24px 14px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+.conv-busy,
+.conv-error {
+  flex: none;
+  padding: 7px 12px;
+  font-size: 12px;
+}
+.conv-busy {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.conv-error {
+  color: var(--up);
+  background: var(--up-soft);
+}
+
+.conv-composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 10px 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.conv-composer textarea {
+  width: 100%;
+  min-height: 66px;
+  max-height: 180px;
+  resize: vertical;
+}
+.conv-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.conv-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.conv-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.conv-example {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.conv-example:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.conv-viewbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+.conv-editor-wrap {
+  flex: 1;
+  min-height: 200px;
+  display: flex;
+  overflow: hidden;
+}
+.conv-editor-wrap .studio-editor {
+  flex: 1;
+  min-height: 0;
+}
+.conv-editor-wrap .studio-ta {
+  height: 100%;
+}
+.conv-edit-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 9px 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.conv-edit-actions input {
+  flex: 1;
+  min-width: 150px;
+}
+.conv-versions {
+  flex: none;
+  max-height: 40%;
+  overflow-y: auto;
+  padding: 9px 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.conv-versions h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.version-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.version-item {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  background: var(--bg-soft);
+}
+.version-current {
+  border-color: var(--ok);
+}
+.version-base {
+  border-color: var(--accent);
+}
+.version-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+.version-id {
+  font-family: var(--mono);
+  font-weight: 700;
+}
+.version-source {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--panel-inset);
+  color: var(--text-dim);
+}
+.src-agent {
+  color: var(--accent);
+}
+.src-user {
+  color: var(--warn);
+}
+.src-initial {
+  color: var(--text-faint);
+}
+.version-time {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.version-msg {
+  margin-top: 3px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.version-analysis {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.version-metrics {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.version-lines {
+  margin-left: 8px;
+  color: var(--text-faint);
+}
+.version-actions {
+  display: flex;
+  gap: 5px;
+  margin-top: 5px;
+}
+.version-actions .btn {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.badge-info {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.conv-result {
+  overflow-y: auto;
+}
+.conv-result > .conv-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel);
+}
+.conv-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 9px 11px 0;
+}
+.conv-step {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.conv-step.step-ok {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.conv-step.step-fail {
+  color: var(--up);
+  border-color: var(--up);
+}
+.conv-analysis {
+  padding: 8px 12px 0;
+  font-size: 12px;
+}
+.conv-analysis strong {
+  color: var(--accent);
+}
+.conv-analysis p {
+  margin: 4px 0;
+  color: var(--text-dim);
+}
+.conv-report {
+  margin: 8px 11px;
+  font-size: 12px;
+}
+.conv-report summary {
+  cursor: pointer;
+  color: var(--text-dim);
+}
+.conv-report pre {
+  max-height: 260px;
+  overflow: auto;
+  background: var(--panel-inset);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  font-size: 11px;
+}
+
+.conv-diff-panel {
+  border-top: 1px solid var(--border-soft);
+  padding: 9px 10px 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 260px;
+}
+.conv-diff-panel h3 {
+  margin: 0 0 7px;
+  font-size: 13px;
+}
+.conv-compare-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+.conv-compare-bar select {
+  flex: 1;
+  min-width: 0;
+}
+.conv-arrow {
+  color: var(--text-faint);
+}
+.diff-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.diff-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.diff-labels {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.diff-label-old {
+  color: var(--up);
+}
+.diff-label-new {
+  color: var(--down);
+}
+.diff-stats {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+.diff-stat-add {
+  color: var(--down);
+}
+.diff-stat-remove {
+  color: var(--up);
+}
+.diff-body {
+  flex: 1;
+  max-height: 420px;
+  overflow: auto;
+  background: var(--panel-inset);
+  border-radius: var(--radius-sm);
+}
+.diff-row {
+  display: flex;
+  min-width: max-content;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.diff-ln {
+  width: 40px;
+  flex: none;
+  text-align: right;
+  padding-right: 6px;
+  color: var(--text-faint);
+  border-right: 1px solid var(--border-soft);
+  user-select: none;
+}
+.diff-sign {
+  width: 18px;
+  flex: none;
+  text-align: center;
+  user-select: none;
+}
+.diff-text {
+  white-space: pre;
+  padding-right: 14px;
+  flex: 1;
+}
+.diff-add {
+  background: var(--down-soft);
+}
+.diff-add .diff-sign {
+  color: var(--down);
+}
+.diff-remove {
+  background: var(--up-soft);
+}
+.diff-remove .diff-sign {
+  color: var(--up);
+}
+.diff-context .diff-sign {
+  color: transparent;
+}
+.diff-unified {
+  margin-top: 7px;
+  font-size: 11px;
+}
+.diff-unified summary {
+  cursor: pointer;
+  color: var(--text-dim);
+}
+.diff-unified pre {
+  max-height: 220px;
+  overflow: auto;
+  background: var(--panel-inset);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+}
