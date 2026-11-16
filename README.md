@@ -100,22 +100,28 @@ cd aagent
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"          # 真实数据另装:pip install -e ".[akshare]"
 
-# 3. 构建数据 bundle —— 两种方式任选
+# 3. 构建数据 bundle —— 默认 ETF(源为 AKShare 东财→新浪双源降级)
 
-#   3a. 合成数据(秒级,无网络依赖,先跑通管线)
-python -m aquant.data.build_bundle --source synthetic --out ~/.aquant/bundle
-
-#   3b. 真实 A 股数据(需网络;东财限流时自动降级新浪)
+#   3a. 默认:全市场 ETF(宽基/行业/跨境/债/黄金,东财限流自动切新浪)
 pip install -e ".[akshare]"
+python -m aquant.data.build_bundle --source etf --out ~/.aquant/bundle-etf \
+    --top 300 --start 2021-01-01 --end 2026-11-15
+#   自检输出:instruments 加载、ETF 合约(type=ETF)、funds.h5、trading_dates
+
+#   3b. 合成数据(秒级,无网络依赖,先跑通管线)
+python -m aquant.data.build_bundle --source synthetic --out ~/.aquant/bundle-synth
+
+#   3c. 真实 A 股个股(需网络;东财限流时自动降级新浪)
 python -m aquant.data.build_bundle --source akshare \
     --codes 000001,600519 --start 2022-01-01 --end 2024-12-31 \
-    --out ~/.aquant/bundle-real
+    --out ~/.aquant/bundle-stock
 
-# 4. 一键启动完整平台(前端 + API)
-scripts/start_platform.sh 8000 ~/.aquant/bundle-real
+# 4. 一键启动完整平台(前端 + API),默认加载 ~/.aquant/bundle-etf
+scripts/start_platform.sh 8000
+# 指定其它 bundle: scripts/start_platform.sh 8000 ~/.aquant/bundle-stock
 # 浏览器打开 http://127.0.0.1:8000
 
-# 5. 跑测试(283 个)
+# 5. 跑测试
 python -m pytest tests/
 ```
 
@@ -329,12 +335,29 @@ MCP 侧环境变量:`AQUANT_API_BASE`(默认 http://127.0.0.1:8000)、`AQUANT_MC
 
 ## 真实数据构建
 
+平台**默认数据源 = ETF**(全市场 ETF 轮动/配置策略开箱即用):
+
 ```bash
-# 平台已内置双源降级:东方财富(主)→ 新浪(备,东财 IP 限流时自动切换)
+# 默认:全市场 ETF,东财(主)→ 新浪(备)双源降级,东财限流自动熔断切新浪
+python -m aquant.data.build_bundle --source etf --out ~/.aquant/bundle-etf \
+    --top 300 --start 2021-01-01 --end 2026-11-15
+# 不传 --codes 时自动发现全市场 ETF 并按成交额取 Top-N(--top,默认 300)
+# 自检输出:instruments 条数、ETF 合约(type=ETF/fund_type=ETF)、funds.h5、trading_dates
+```
+
+**ETF 数据源选型(为何是默认)**:基于 AKShare 聚合的免费源——
+- 东方财富 `fund_etf_hist_em`/`fund_etf_spot_em`:覆盖全、支持复权,但 push2 行情易限流;
+- 新浪 `fund_etf_hist_sina`/`fund_etf_category_sina`:实测 900+ 只 ETF、历史可回溯、稳定不限流;
+- 实现**东财优先→新浪降级→东财熔断**:首批探测确认东财限流后本批次全走新浪,避免大池子逐只空等。
+- ETF/LOF/REITs 合约写入 `funds.h5`(`type="ETF"` 且带 `fund_type`),个股写 `stocks.h5`。
+
+个股数据(需时可选):
+
+```bash
+# 平台内置双源降级:东方财富(主)→ 新浪(备,东财 IP 限流时自动切换)
 python -m aquant.data.build_bundle --source akshare \
     --codes 000001,600519 --start 2022-01-01 --end 2024-12-31 \
-    --out ~/.aquant/bundle-real
-
+    --out ~/.aquant/bundle-stock
 # 自检输出:instruments 加载、stocks.h5 首行(真实价 + 涨跌停价)
 ```
 
@@ -343,7 +366,9 @@ python -m aquant.data.build_bundle --source akshare \
   撮合用真实价与真实涨跌停价,**不存在双重复权**;
 - 现金分红进 `dividends.h5`(账户模块处理);AKShare 分红接口失败时价格复权仍正确
   (因子已含),仅缺现金到账,构建日志会警告;
-- 区间首日无前收盘价,涨跌停字段为超宽占位值(回测从第 2 日起完全真实)。
+- 区间首日无前收盘价,涨跌停字段为超宽占位值(回测从第 2 日起完全真实);
+- 分层验证(`/api/verify`)的随机基准需从股票合约构造,**纯 ETF bundle 不支持**(返回 400 指引),
+  如需分层验证请另建含个股的 bundle。
 
 ---
 
@@ -387,7 +412,7 @@ export AQUANT_MCP_TOKEN='tkn_xxx'
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `AQUANT_BUNDLE_PATH` | `~/.aquant/bundle` | RQAlpha 数据 bundle 目录 |
+| `AQUANT_BUNDLE_PATH` | `~/.aquant/bundle-etf` | RQAlpha 数据 bundle 目录(启动脚本默认 ETF) |
 | `AQUANT_LLM_BASE_URL` / `AQUANT_LLM_API_KEY` / `AQUANT_LLM_MODEL` | - | OpenAI 兼容 LLM 三件套(全设才启用) |
 | `AQUANT_LLM_AUTH_SCHEME` | `bearer` | `bearer` 或 `api-key` |
 | `AQUANT_LLM_TIMEOUT` | `120` | LLM 请求超时(秒) |

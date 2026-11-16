@@ -5,11 +5,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PORT="${1:-8000}"
-BUNDLE="${2:-$HOME/.aquant/bundle-real}"
+# 默认 bundle:全市场 ETF(AKShare 双源降级,最全最稳的免费数据源)
+BUNDLE="${2:-${AQUANT_BUNDLE_PATH:-$HOME/.aquant/bundle-etf}}"
 
 if [ ! -f "$BUNDLE/instruments.pk" ]; then
     echo "bundle 不存在: $BUNDLE"
-    echo "先用合成数据快速起步: .venv/bin/python -m aquant.data.build_bundle --source synthetic --out $HOME/.aquant/bundle"
+    echo "构建默认 ETF bundle(全市场 Top300,2021-2026):"
+    echo "  .venv/bin/python -m aquant.data.build_bundle --source etf --out $HOME/.aquant/bundle-etf --top 300 --start 2021-01-01 --end 2026-11-15"
     exit 1
 fi
 

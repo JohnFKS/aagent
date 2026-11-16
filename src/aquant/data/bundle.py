@@ -14,7 +14,8 @@
   2005-01-04~2005-01-04 → "There is no data" 报错),因此**始终保证存在覆盖
   全部交易日历的 '000001.XSHG' dataset**;无真实基准数据时用成分股等权归一
   合成基准(仅用于区间收敛与基准对照,不参与撮合)。
-- ``funds.h5`` / ``futures.h5``:空文件(data_source.py 初始化强制要求存在)。
+- ``funds.h5``:每 ETF/LOF/REITs 合约一个 dataset(与 stocks.h5 同 dtype);
+  ``futures.h5``:空文件(data_source.py 初始化强制要求存在)。
 - ``dividends.h5``:字段与 interface.py 文档一致(book_closure_date/announcement_date/
   dividend_cash_before_tax/ex_dividend_date/payable_date/round_lot),
   账户模块按 ``dividend_cash_before_tax / round_lot`` 折算每股现金(position_model.py L262)。
@@ -284,8 +285,12 @@ def build_bundle(
     if len(calendar) == 0:
         raise ValueError("sources 未提供任何日线数据,无法构建 bundle")
 
-    # ---- stocks.h5(真实价 + limits.py 涨跌停;停牌日不写行)----
-    with h5py.File(out / "stocks.h5", "w") as h5:
+    # ---- stocks.h5 / funds.h5(真实价 + limits.py 涨跌停;停牌日不写行)----
+    # RQAlpha 6.5.0:CS → stocks.h5;ETF/LOF/REITs → funds.h5(同一 SecuritiesDayBarStore
+    # dtype)。按合约 type 分流,ETF 的 type='ETF' 且带 fund_type 由 source 提供。
+    _fund_types = {"ETF", "LOF", "REITs"}
+    with h5py.File(out / "stocks.h5", "w") as h5_stocks, \
+            h5py.File(out / "funds.h5", "w") as h5_funds:
         for inst in data["instruments"].values():
             oid = inst["order_book_id"]
             df = data["daily"][oid]
@@ -294,7 +299,8 @@ def build_bundle(
             bars = _stock_bars_with_limits(
                 oid, inst, df, data["suspended"][oid], set(data["st"][oid]), calendar
             )
-            h5.create_dataset(oid, data=bars)
+            target = h5_funds if inst.get("type") in _fund_types else h5_stocks
+            target.create_dataset(oid, data=bars)
 
     # ---- indexes.h5 ----
     # '000001.XSHG' 恒存在(available_data_range 硬编码,见模块 docstring);
@@ -320,10 +326,10 @@ def build_bundle(
                 )
                 index_inst_oids.append(benchmark_oid)
 
-    # ---- funds.h5 / futures.h5:空文件(data_source.py 初始化强制要求存在)----
-    for name in ("funds.h5", "futures.h5"):
-        with h5py.File(out / name, "w"):
-            pass
+    # ---- futures.h5:空文件(data_source.py 初始化强制要求存在)----
+    # funds.h5 已在上面按 ETF 分流写入(无 ETF 时仍为空文件,要求满足)
+    with h5py.File(out / "futures.h5", "w"):
+        pass
 
     # ---- dividends.h5 / split_factor.h5 / ex_cum_factor.h5 ----
     div_arrays: dict[str, np.ndarray] = {}

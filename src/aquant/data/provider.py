@@ -32,8 +32,10 @@ class BarSource(Protocol):
         """全部合约元数据。
 
         每项至少包含:order_book_id(如 '000001.XSHE')、symbol(名称)、
-        type('CS')、listed_date、de_listed_date('YYYY-MM-DD' 或 '0000-00-00' 表示未退市)、
-        round_lot(一手股数,股票为 100)。
+        type('CS' 股票 / 'ETF' 基金)、listed_date、
+        de_listed_date('YYYY-MM-DD' 或 '0000-00-00' 表示未退市)、
+        round_lot(一手股数,股票/ETF 均为 100)。
+        ETF 必须额外含 ``fund_type``(如 'ETF'),bundle 构建器据此写入 funds.h5。
         """
         ...
 
