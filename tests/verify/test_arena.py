@@ -249,3 +249,30 @@ class TestRunArenaRealBacktest:
         # 两个候选同码同区间:排名并列连续(1、2 名),表格含两名候选
         assert [r["rank"] for r in out["ranking"]] == [1, 2]
         assert all(name in out["table"] for name in ("甲", "乙"))
+
+
+class TestRunArenaExecutionErrorDict:
+    def test_runner_result_with_execution_error_is_failed(self):
+        """RealRunnerAdapter 的 dict 结果若带 execution_error,不得当成功排名。"""
+        class ErrorDictRunner:
+            def run(self, code, start, end, **kw):
+                if "ARENA:13" in code:
+                    return {"summary": {}, "trades": [], "execution_error": "Instrument has no attribute 'board_type'"}
+                return {
+                    "summary": {"annualized_returns": 0.2, "sharpe": 1.5},
+                    "trades": [], "verdict": {"passed": True},
+                }
+
+        out = run_arena(
+            [
+                {"name": "幸存者", "code": _good_strategy("20")},
+                {"name": "执行失败", "code": _good_strategy("13")},
+            ],
+            START, END, runner=ErrorDictRunner(),
+        )
+        assert out["ranked_count"] == 1
+        assert [r["name"] for r in out["ranking"]] == ["幸存者"]
+        failed = out["details"]["执行失败"]
+        assert failed["status"] == "failed"
+        assert "board_type" in failed["error"]
+        assert "metrics" not in failed

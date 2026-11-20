@@ -98,20 +98,23 @@ cd aagent
 
 # 2. Python 环境(3.11+,rqalpha 锁 numpy 1.26 / pandas 2.x)
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"          # 真实数据另装:pip install -e ".[akshare]"
+pip install -e ".[dev,baostock,akshare]"
 
-# 3. 构建数据 bundle —— 默认 ETF(源为 AKShare 东财→新浪双源降级)
+# 3. 构建数据 bundle —— 默认 Baostock 主力 + AKShare 交叉校验
 
-#   3a. 默认:全市场 ETF(宽基/行业/跨境/债/黄金,东财限流自动切新浪)
-pip install -e ".[akshare]"
-python -m aquant.data.build_bundle --source etf --out ~/.aquant/bundle-etf \
-    --top 300 --start 2021-01-01 --end 2026-11-15
-#   自检输出:instruments 加载、ETF 合约(type=ETF)、funds.h5、trading_dates
+#   3a. 主力源:Baostock 真实价 + 后复权因子;AKShare 自动做跨源比价
+python -m aquant.data.build_bundle --source baostock \
+    --codes 000001,600519 --start 2021-01-01 --end 2026-11-15 \
+    --out ~/.aquant/bundle-baostock
+#   raw/hfq close 超差时按覆盖度评分自动切换到数据最全的源整段回测(不混源),
+#   选择原因与差异明细写入 bundle/cross_check.json
+#   K线默认缓存到 ~/.aquant/cache/duckdb,用 --cache-max-mb / --cache-retention-days
+#   控制磁盘占用;超出上限时淘汰最久未用标的
 
 #   3b. 合成数据(秒级,无网络依赖,先跑通管线)
 python -m aquant.data.build_bundle --source synthetic --out ~/.aquant/bundle-synth
 
-#   3c. 真实 A 股个股(需网络;东财限流时自动降级新浪)
+#   3c. 仅用 AKShare(仍会尝试 Baostock 做交叉校验)
 python -m aquant.data.build_bundle --source akshare \
     --codes 000001,600519 --start 2022-01-01 --end 2024-12-31 \
     --out ~/.aquant/bundle-stock
@@ -445,6 +448,11 @@ scripts/upgrade_rqalpha.sh 6.6.0 --apply   # 验证通过后应用到当前 .ven
 - **GUI 系统测试**:web-gui-tester 方法论,10 个用户流全部通过
   (报告:[docs/system-test-report.md](docs/system-test-report.md),截图 [screenshots/](screenshots/));
 - **code-review 双轴评审**已执行并修复(Standards 14 项 / Spec 11 项)。
+
+### 规范文档
+
+- [策略代码编写规范](docs/strategy-code-conventions.md):RQAlpha 日线策略结构、未来函数/外部数据/墙钟时间禁令、下单与配置门禁、提交前自查。
+- [数据处理规范](docs/data-processing-conventions.md):Baostock 主力 + AKShare 补充、真实价与复权因子口径、跨源比价与超差回退、DuckDB 缓存与容量控制、ST/停牌/退市处理。
 
 ## 项目结构
 

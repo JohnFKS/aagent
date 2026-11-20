@@ -3,7 +3,7 @@
 // - 非 2xx 响应统一转成中文 ApiError(detail/reason 优先,兼容 FastAPI 校验错误数组);
 // - 网络不通 / 超时给出中文场景文案,由各面板以错误条 + toast 展示。
 
-// 需求约定:请求超时 120s
+// 默认请求超时 120s;LLM/回测等长任务在各端点单独放宽。
 const DEFAULT_TIMEOUT = 120000;
 
 /** 携带 HTTP 状态码与后端原始 JSON 的错误对象,便于调用方处理 422 的 verdict 等数据。 */
@@ -99,7 +99,8 @@ export const api = {
   // GET /api/health → {"status":"ok","version"}(健康检查用短超时,快速判定后端在线)
   health: () => request('/api/health', { method: 'GET', timeout: 8000 }),
   // POST /api/chat {text,start,end} → 编排管线结果(steps/code/verdict/metrics/report)
-  chat: (payload) => request('/api/chat', { method: 'POST', body: payload, timeout: 300000 }),  // 真实 LLM+自愈循环耗时更长
+  // 真实 LLM 单次 120s + 最多 2 次重试与退避,最坏约 366s,留缓冲到 7 分钟
+  chat: (payload) => request('/api/chat', { method: 'POST', body: payload, timeout: 420000 }),
   // POST /api/validate {code,start?,end?} → Layer 1 校验结论 + 中文摘要
   validate: (payload) => request('/api/validate', { method: 'POST', body: payload }),
   // POST /api/backtest {code,start,end,cash?,overrides?} → 200 指标 / 422 拦截(verdict)
@@ -175,4 +176,10 @@ export const api = {
     `/api/sessions/${encodeURIComponent(sid)}/versions/${encodeURIComponent(vid)}`,
     { method: 'DELETE' },
   ),
+
+  // ---- 大模型 API 设置 ----
+  llmSettings: () => request('/api/settings/llm', { method: 'GET' }),
+  saveLlmSettings: (payload) => request('/api/settings/llm', { method: 'PUT', body: payload }),
+  testLlmSettings: (payload) => request('/api/settings/llm/test', { method: 'POST', body: payload, timeout: 180000 }),
+  resetLlmSettings: () => request('/api/settings/llm', { method: 'DELETE' }),
 };

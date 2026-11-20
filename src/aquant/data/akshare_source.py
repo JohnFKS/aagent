@@ -26,6 +26,7 @@ from __future__ import annotations
 import random
 import time
 import warnings
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -132,6 +133,15 @@ class AkshareSource:
             self._ak = ak
         return self._ak
 
+    @staticmethod
+    def _fn(ak: Any, *names: str):
+        """兼容 AKShare 接口改名(如 stock_zh_a_hist → stock_zh_a_hist_em)。"""
+        for name in names:
+            fn = getattr(ak, name, None)
+            if fn is not None:
+                return fn
+        raise AttributeError(f"AKShare 缺少接口:{names}")
+
     def _request(self, fn, *args, **kwargs):
         """限速 + 重试的接口调用封装。"""
         last_exc: Exception | None = None
@@ -183,9 +193,10 @@ class AkshareSource:
         (多源降级模式来源:PA_Agent 调研结论,见 docs/design.md §1.2)。
         """
         ak = self._akshare()
+        em_fn = self._fn(ak, "stock_zh_a_hist_em", "stock_zh_a_hist")
         try:
             df = self._request(
-                ak.stock_zh_a_hist,
+                em_fn,
                 symbol=oid.split(".")[0],
                 period="daily",
                 start_date=self._start.strftime("%Y%m%d"),
@@ -197,8 +208,9 @@ class AkshareSource:
             warnings.warn(
                 f"{oid}:东方财富日线获取失败({em_exc}),降级到新浪接口(成交量单位为股)"
             )
+        sina_fn = self._fn(ak, "stock_zh_a_hist_sina", "stock_zh_a_daily")
         df = self._request(
-            ak.stock_zh_a_daily,
+            sina_fn,
             symbol=self._sina_symbol(oid),
             start_date=self._start.strftime("%Y%m%d"),
             end_date=self._end.strftime("%Y%m%d"),

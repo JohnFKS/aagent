@@ -946,6 +946,75 @@ def diff_versions(
     )
 
 
+# ---- 大模型 API 设置(网页设置页 / 密钥脱敏不回传)-------------------------
+class LLMSettingsPayload(BaseModel):
+    provider: str = "custom"
+    base_url: str
+    api_key: str | None = None
+    model: str
+    auth_scheme: str = "bearer"
+    timeout: float = 120.0
+    max_retries: int = 2
+
+
+def _llm_settings_module():
+    from aquant.config import llm_settings
+    return llm_settings
+
+
+@app.get("/api/settings/llm", dependencies=[Depends(require_mcp_token(scope="readonly"))])
+def get_llm_settings() -> dict[str, Any]:
+    mod = _llm_settings_module()
+    return mod.redact(mod.load_settings())
+
+
+@app.put("/api/settings/llm", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def save_llm_settings(payload: LLMSettingsPayload, request: Request) -> dict[str, Any]:
+    mod = _llm_settings_module()
+    current = mod.load_settings()
+    api_key = (payload.api_key or current.get("api_key") or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API Key 不能为空")
+    if not payload.base_url.strip() or not payload.model.strip():
+        raise HTTPException(status_code=400, detail="Base URL 与模型名不能为空")
+    if payload.auth_scheme not in ("bearer", "api-key"):
+        raise HTTPException(status_code=400, detail="auth_scheme 只能是 bearer 或 api-key")
+    data = payload.model_dump()
+    data["api_key"] = api_key
+    data["base_url"] = payload.base_url.strip()
+    data["model"] = payload.model.strip()
+    saved = mod.save_settings(data)
+    request.app.state.llm = None
+    return mod.redact(saved)
+
+
+@app.delete("/api/settings/llm", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def reset_llm_settings(request: Request) -> dict[str, Any]:
+    mod = _llm_settings_module()
+    mod.clear_settings()
+    request.app.state.llm = None
+    return mod.redact({})
+
+
+@app.post("/api/settings/llm/test", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def test_llm_settings(payload: LLMSettingsPayload) -> dict[str, Any]:
+    from aquant.agents.llm import OpenAICompatLLM
+    mod = _llm_settings_module()
+    api_key = (payload.api_key or mod.load_settings().get("api_key") or "").strip()
+    if not api_key or not payload.base_url.strip() or not payload.model.strip():
+        raise HTTPException(status_code=400, detail="请先填写 Base URL、模型名和 API Key")
+    client = OpenAICompatLLM(
+        payload.base_url.strip(), api_key, payload.model.strip(),
+        auth_scheme=payload.auth_scheme,
+        timeout=payload.timeout, max_retries=payload.max_retries,
+    )
+    try:
+        reply = client.complete("You are a connectivity test. Reply with OK.", "ping")
+    except LLMAPIError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "detail": str(exc)})
+    return {"ok": True, "reply": reply[:200], "model": payload.model.strip()}
+
+
 # ---- 前端静态托管(单容器部署模式,来源:tick-stock-panel 调研结论)-----------
 # frontend/dist 由 Vite 构建产出;存在时 FastAPI 直接托管,/api/* 路由优先于
 # SPA fallback。dist 不存在时 API 独立运行(纯后端模式)。

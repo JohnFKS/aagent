@@ -83,7 +83,7 @@ export default function StepProgress({ steps, rejected = false, running = false 
       {/* 请求期间的等待提示 */}
       {running && (
         <div className="steps-hint">
-          管线执行中:生成 → 校验 → 回测 → 评审 → 报告(最长 120 秒,请耐心等待)…
+          管线执行中:生成 → 校验 → 回测 → 评审 → 报告(真实 LLM 最长约 7 分钟,请耐心等待)…
         </div>
       )}
       {/* 响应后展示后端返回的每步中文 summary */}

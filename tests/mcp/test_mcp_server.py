@@ -152,7 +152,7 @@ class TestPlatformValidateCode:
             ]
         }
         _install_routes(monkeypatch, {("POST", "/api/validate"): (422, body)})
-        text = server.platform_validate_code("")
+        text = server.platform_validate_code(GOOD_CODE)
         assert "HTTP 422" in text
         assert "string_too_short" in text
         assert "建议" in text
@@ -277,13 +277,14 @@ class TestTokenHeader:
         server.platform_health()
         assert recorder.header("x-mcp-token") == [TEST_TOKEN]
 
-    def test_no_header_when_multi_token_env_invalid(self, monkeypatch):
-        """AQUANT_MCP_TOKENS 非法 JSON → 不附加头(fail 静默,由后端闸门兜底)。"""
+    def test_invalid_multi_token_env_fails_closed(self, monkeypatch):
+        """AQUANT_MCP_TOKENS 非法 JSON → 明确配置错误,且不发请求(fail closed)。"""
         recorder = _install_routes(monkeypatch, {("GET", "/api/health"): (200, {})})
         monkeypatch.delenv("AQUANT_MCP_TOKEN", raising=False)
         monkeypatch.setenv("AQUANT_MCP_TOKENS", "{not-json")
-        server.platform_health()
-        assert recorder.header("x-mcp-token") == [None]
+        text = server.platform_health()
+        assert "MCP 配置错误" in text and "AQUANT_MCP_TOKENS" in text
+        assert recorder.header("x-mcp-token") == []
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +521,7 @@ class TestPlatformArena:
         }
         _install_routes(monkeypatch, {("POST", "/api/arena"): (422, body)})
         text = server.platform_arena(
-            [{"name": f"c{i}", "code": GOOD_CODE} for i in range(7)], START, END
+            [{"name": "c1", "code": GOOD_CODE}, {"name": "c2", "code": GOOD_CODE}], START, END
         )
         assert "422" in text
         assert "too_long" in text
@@ -531,7 +532,7 @@ class TestPlatformArena:
         body = {"detail": "候选名重复:同场竞技的候选名必须唯一。"}
         _install_routes(monkeypatch, {("POST", "/api/arena"): (400, body)})
         text = server.platform_arena(
-            [{"name": "同", "code": GOOD_CODE}, {"name": "同", "code": BAD_CODE}],
+            [{"name": "甲", "code": GOOD_CODE}, {"name": "乙", "code": BAD_CODE}],
             START, END,
         )
         assert "400" in text

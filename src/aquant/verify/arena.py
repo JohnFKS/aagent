@@ -142,7 +142,20 @@ def run_arena(
                 except Exception as exc:  # 单候选失败不中断全场(含 BaseException 之外的一切)
                     details[name] = {"status": "failed", "error": _error_summary(exc)}
                     continue
+                if isinstance(result, dict):
+                    exec_error = result.get("execution_error")
+                else:
+                    exec_error = getattr(result, "execution_error", None)
+                if exec_error:
+                    details[name] = {
+                        "status": "failed",
+                        "error": _error_summary(RuntimeError(str(exec_error))),
+                    }
+                    continue
                 summary, verdict = _extract_summary_verdict(result)
+                if not summary:
+                    details[name] = {"status": "failed", "error": "回测未返回有效指标,不参与排名"}
+                    continue
                 summaries[name] = summary
                 details[name] = {
                     "status": "ranked",

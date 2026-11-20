@@ -20,7 +20,9 @@
 
 import json
 import os
+from datetime import date
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -89,10 +91,14 @@ def _outgoing_token() -> str:
         return ""
     try:
         raw = json.loads(multi)
-    except json.JSONDecodeError:
-        return ""
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"AQUANT_MCP_TOKENS 不是合法 JSON: {exc}。"
+            "请修正为 {\"token\": {\"scope\": \"readwrite\"}} 后再调用 MCP 工具。"
+        ) from exc
     if not isinstance(raw, dict) or not raw:
-        return ""
+        raise ValueError("AQUANT_MCP_TOKENS 必须是非空 JSON 对象")
+
     for key, value in raw.items():
         scope = value.get("scope", "readwrite") if isinstance(value, dict) else value
         if str(scope).strip() == "readwrite":
@@ -103,6 +109,36 @@ def _outgoing_token() -> str:
 def _json_text(data: Any) -> str:
     """JSON 转可读文本(中文不转义)。"""
     return json.dumps(data, ensure_ascii=False, indent=2, default=str)
+
+
+def _q(value: str) -> str:
+    """路径参数 URL 转义,避免 '/', '?' 等破坏路由。"""
+    return quote(str(value), safe="")
+
+
+def _param_error_text(tool: str, message: str) -> str:
+    return f"[{tool}] 参数错误:{message}。请修正参数后重试。"
+
+
+def _date_error(tool: str, *values: tuple[str, str]) -> str | None:
+    """校验 YYYY-MM-DD 日期及 start < end。"""
+    parsed: dict[str, date] = {}
+    for name, value in values:
+        try:
+            parsed[name] = date.fromisoformat(str(value))
+        except (ValueError, TypeError):
+            return _param_error_text(tool, f"{name} 必须是 YYYY-MM-DD 日期,收到 {value!r}")
+    if len(parsed) == 2:
+        names = list(parsed)
+        if parsed[names[0]] >= parsed[names[1]]:
+            return _param_error_text(tool, f"{names[0]} 必须早于 {names[1]}")
+    return None
+
+
+def _code_error(tool: str, code: str) -> str | None:
+    if not isinstance(code, str) or not code.strip():
+        return _param_error_text(tool, "code 必须是非空策略源码字符串")
+    return None
 
 
 def _request(
@@ -193,6 +229,8 @@ def _error_text(
 
 def _transport_error_text(tool: str, exc: Exception) -> str:
     """连接失败/超时 → 可读文本,指引 LLM 或用户先检查后端。"""
+    if isinstance(exc, (ValueError, TypeError)):
+        return f"[{tool}] MCP 配置错误:{exc}"
     return (
         f"[{tool}] 无法连接量化平台 API({_api_base()})。"
         f"请确认后端已启动(例如:uvicorn aquant.api.main:app --port 8000),"
@@ -302,6 +340,15 @@ def platform_health() -> str:
 )
 def platform_validate_code(code: str, start: str | None = None, end: str | None = None) -> str:
     """转发 POST /api/validate;2xx 返回 verdict JSON 文本,非 2xx 返回可读错误文本。"""
+    err = _code_error("platform_validate_code", code)
+    if err:
+        return err
+    if (start is None) != (end is None):
+        return _param_error_text("platform_validate_code", "start/end 必须同时提供或同时省略")
+    if start is not None and end is not None:
+        err = _date_error("platform_validate_code", ("start", start), ("end", end))
+        if err:
+            return err
     payload: dict[str, Any] = {"code": code}
     if start is not None:
         payload["start"] = start
@@ -338,6 +385,13 @@ def platform_validate_code(code: str, start: str | None = None, end: str | None 
 )
 def platform_run_backtest(code: str, start: str, end: str, cash: float | None = None) -> str:
     """转发 POST /api/backtest;200 返回 metrics JSON,422/400 返回结构化可读文本。"""
+    err = _code_error("platform_run_backtest", code) or _date_error(
+        "platform_run_backtest", ("start", start), ("end", end)
+    )
+    if err:
+        return err
+    if cash is not None and (not isinstance(cash, (int, float)) or cash <= 0):
+        return _param_error_text("platform_run_backtest", "cash 必须是正数")
     payload: dict[str, Any] = {"code": code, "start": start, "end": end}
     if cash is not None:
         payload["cash"] = cash
@@ -397,6 +451,13 @@ def platform_optimize(
     overrides: dict | None = None,
 ) -> str:
     """转发 POST /api/optimize;200 返回优化结果 JSON,422/400/502 返回可读错误文本。"""
+    err = _code_error("platform_optimize", code) or _date_error(
+        "platform_optimize", ("start", start), ("end", end)
+    )
+    if err:
+        return err
+    if not isinstance(rounds, int) or not 1 <= rounds <= 5:
+        return _param_error_text("platform_optimize", "rounds 必须是 1~5 的整数")
     payload: dict[str, Any] = {"code": code, "start": start, "end": end, "rounds": rounds}
     if cash is not None:
         payload["cash"] = cash
@@ -445,6 +506,13 @@ def platform_verify_layered(
     overrides: dict | None = None,
 ) -> str:
     """转发 POST /api/verify;200 返回分层验证结果 JSON,422/400 返回可读错误文本。"""
+    err = _code_error("platform_verify_layered", code) or _date_error(
+        "platform_verify_layered", ("start", start), ("end", end)
+    )
+    if err:
+        return err
+    if not isinstance(is_ratio, (int, float)) or not 0.5 <= is_ratio <= 0.9:
+        return _param_error_text("platform_verify_layered", "is_ratio 必须是 0.5~0.9 的数值")
     payload: dict[str, Any] = {"code": code, "start": start, "end": end, "is_ratio": is_ratio}
     if overrides is not None:
         payload["overrides"] = overrides
@@ -483,6 +551,11 @@ def platform_verify_layered(
 )
 def platform_get_kline(oid: str, start: str, end: str) -> str:
     """转发 GET /api/kline(query 参数);200 返回 candles JSON,400 返回可读错误文本。"""
+    err = _date_error("platform_get_kline", ("start", start), ("end", end))
+    if err:
+        return err
+    if not isinstance(oid, str) or not oid.strip():
+        return _param_error_text("platform_get_kline", "oid 不能为空")
     try:
         resp = _request("GET", "/api/kline", params={"oid": oid, "start": start, "end": end})
     except Exception as exc:  # noqa: BLE001 - 薄桥不向 LLM 抛异常
@@ -511,6 +584,18 @@ def platform_get_kline(oid: str, start: str, end: str) -> str:
 )
 def platform_arena(candidates: list[dict[str, str]], start: str, end: str) -> str:
     """转发 POST /api/arena;200 返回排名结果 JSON,422/400 返回可读错误文本。"""
+    err = _date_error("platform_arena", ("start", start), ("end", end))
+    if err:
+        return err
+    if not isinstance(candidates, list) or not 1 <= len(candidates) <= 6:
+        return _param_error_text("platform_arena", "candidates 必须包含 1~6 个候选")
+    names = [str(c.get("name") or "").strip() for c in candidates if isinstance(c, dict)]
+    if len(names) != len(candidates) or not all(names) or len(set(names)) != len(names):
+        return _param_error_text("platform_arena", "每个候选必须是非空 {name, code} 且名称唯一")
+    for c in candidates:
+        err = _code_error("platform_arena", c.get("code", ""))
+        if err:
+            return err
     payload: dict[str, Any] = {"candidates": candidates, "start": start, "end": end}
     try:
         resp = _request(
@@ -627,6 +712,8 @@ def _session_text(
     timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> str:
     """会话族工具统一转发:非 2xx / 连接失败均返回可读中文文本,不抛异常。"""
+    if "/sessions//" in path or path.endswith("/sessions/"):
+        return _param_error_text(tool, "sid 不能为空")
     try:
         resp = _request(method, path, json_payload=json_payload, params=params, timeout=timeout)
     except Exception as exc:  # noqa: BLE001 - 薄桥契约
@@ -680,7 +767,7 @@ def platform_session_list() -> str:
     )
 )
 def platform_session_get(sid: str) -> str:
-    return _session_text("platform_session_get", "GET", f"/api/sessions/{sid}")
+    return _session_text("platform_session_get", "GET", f"/api/sessions/{_q(sid)}")
 
 
 @mcp.tool(
@@ -695,7 +782,7 @@ def platform_session_get(sid: str) -> str:
 )
 def platform_session_turn(sid: str, text: str, backtest: bool = True) -> str:
     return _session_text(
-        "platform_session_turn", "POST", f"/api/sessions/{sid}/turns",
+        "platform_session_turn", "POST", f"/api/sessions/{_q(sid)}/turns",
         json_payload={"text": text, "backtest": backtest},
         timeout=OPTIMIZE_TIMEOUT_SECONDS,
     )
@@ -719,7 +806,7 @@ def platform_session_edit_code(
     if message is not None:
         payload["message"] = message
     return _session_text(
-        "platform_session_edit_code", "PUT", f"/api/sessions/{sid}/code",
+        "platform_session_edit_code", "PUT", f"/api/sessions/{_q(sid)}/code",
         json_payload=payload, timeout=VERIFY_TIMEOUT_SECONDS,
     )
 
@@ -732,7 +819,7 @@ def platform_session_edit_code(
 )
 def platform_session_backtest(sid: str) -> str:
     return _session_text(
-        "platform_session_backtest", "POST", f"/api/sessions/{sid}/backtest",
+        "platform_session_backtest", "POST", f"/api/sessions/{_q(sid)}/backtest",
         timeout=VERIFY_TIMEOUT_SECONDS,
     )
 
@@ -746,7 +833,7 @@ def platform_session_backtest(sid: str) -> str:
 )
 def platform_session_rollback(sid: str, version_id: str) -> str:
     return _session_text(
-        "platform_session_rollback", "POST", f"/api/sessions/{sid}/rollback",
+        "platform_session_rollback", "POST", f"/api/sessions/{_q(sid)}/rollback",
         json_payload={"version_id": version_id},
     )
 
@@ -758,7 +845,7 @@ def platform_session_rollback(sid: str, version_id: str) -> str:
     )
 )
 def platform_session_versions(sid: str) -> str:
-    return _session_text("platform_session_versions", "GET", f"/api/sessions/{sid}/versions")
+    return _session_text("platform_session_versions", "GET", f"/api/sessions/{_q(sid)}/versions")
 
 
 @mcp.tool(
@@ -773,7 +860,7 @@ def platform_session_diff(sid: str, from_version: str, to_version: str | None = 
     if to_version is not None:
         params["to_version"] = to_version
     return _session_text(
-        "platform_session_diff", "GET", f"/api/sessions/{sid}/diff", params=params
+        "platform_session_diff", "GET", f"/api/sessions/{_q(sid)}/diff", params=params
     )
 
 
@@ -785,7 +872,7 @@ def platform_session_diff(sid: str, from_version: str, to_version: str | None = 
 )
 def platform_session_purge(sid: str) -> str:
     return _session_text(
-        "platform_session_purge", "DELETE", f"/api/sessions/{sid}",
+        "platform_session_purge", "DELETE", f"/api/sessions/{_q(sid)}",
         params={"permanent": "true"},
     )
 
@@ -797,7 +884,7 @@ def platform_session_purge(sid: str) -> str:
     )
 )
 def platform_session_turns(sid: str) -> str:
-    return _session_text("platform_session_turns", "GET", f"/api/sessions/{sid}/turns")
+    return _session_text("platform_session_turns", "GET", f"/api/sessions/{_q(sid)}/turns")
 
 
 @mcp.tool(
@@ -811,7 +898,7 @@ def platform_session_turn_add(sid: str, role: str, text: str, version_id: str | 
     if version_id is not None:
         payload["version_id"] = version_id
     return _session_text(
-        "platform_session_turn_add", "POST", f"/api/sessions/{sid}/turns/message",
+        "platform_session_turn_add", "POST", f"/api/sessions/{_q(sid)}/turns/message",
         json_payload=payload,
     )
 
@@ -835,7 +922,7 @@ def platform_session_turn_update(
         if value is not None:
             payload[key] = value
     return _session_text(
-        "platform_session_turn_update", "PATCH", f"/api/sessions/{sid}/turns/{tid}",
+        "platform_session_turn_update", "PATCH", f"/api/sessions/{_q(sid)}/turns/{_q(tid)}",
         json_payload=payload,
     )
 
@@ -847,7 +934,7 @@ def platform_session_turn_update(
 )
 def platform_session_turn_delete(sid: str, tid: str) -> str:
     return _session_text(
-        "platform_session_turn_delete", "DELETE", f"/api/sessions/{sid}/turns/{tid}"
+        "platform_session_turn_delete", "DELETE", f"/api/sessions/{_q(sid)}/turns/{_q(tid)}"
     )
 
 
@@ -869,7 +956,7 @@ def platform_session_version_update(
         if value is not None:
             payload[key] = value
     return _session_text(
-        "platform_session_version_update", "PATCH", f"/api/sessions/{sid}/versions/{vid}",
+        "platform_session_version_update", "PATCH", f"/api/sessions/{_q(sid)}/versions/{_q(vid)}",
         json_payload=payload,
     )
 
@@ -882,7 +969,7 @@ def platform_session_version_update(
 )
 def platform_session_version_delete(sid: str, vid: str) -> str:
     return _session_text(
-        "platform_session_version_delete", "DELETE", f"/api/sessions/{sid}/versions/{vid}"
+        "platform_session_version_delete", "DELETE", f"/api/sessions/{_q(sid)}/versions/{_q(vid)}"
     )
 
 

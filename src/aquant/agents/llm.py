@@ -186,21 +186,36 @@ class OpenAICompatLLM:
 
 
 def make_llm() -> LLMClient:
-    """按环境变量构造 LLM 客户端:三项 AQUANT_LLM_* 齐备用 OpenAICompatLLM,否则兜底。
+    """构造 LLM 客户端:网页设置页保存的配置优先,其次环境变量,否则确定性兜底。"""
+    from aquant.config.llm_settings import load_settings
 
-    :raises ValueError: 环境变量配置不完整(部分设置)时,给出明确指引。
-    """
-    values = {name: os.environ.get(name) for name in _REQUIRED_ENVS}
+    saved = load_settings()
+    file_keys = {
+        ENV_BASE_URL: "base_url",
+        ENV_API_KEY: "api_key",
+        ENV_MODEL: "model",
+    }
+    values = {
+        name: (saved.get(file_keys[name]) or os.environ.get(name))
+        for name in _REQUIRED_ENVS
+    }
     configured = [name for name, value in values.items() if value]
     if not configured:
         return DeterministicLLM()
     if len(configured) != len(_REQUIRED_ENVS):
         missing = [name for name, value in values.items() if not value]
         raise ValueError(
-            f"LLM 环境变量配置不完整:已设置 {configured},缺失 {missing}。"
-            f"请补全 {_REQUIRED_ENVS} 三项,或全部不设置以使用 DeterministicLLM 兜底。"
+            f"LLM 配置不完整:已设置 {configured},缺失 {missing}。"
+            f"请在网页设置页补全,或设置 {_REQUIRED_ENVS} 三项环境变量。"
         )
-    auth_scheme = os.environ.get(ENV_AUTH_SCHEME, "bearer").strip().lower() or "bearer"
+    auth_scheme = (
+        saved.get("auth_scheme") or os.environ.get(ENV_AUTH_SCHEME, "bearer")
+    ).strip().lower() or "bearer"
     return OpenAICompatLLM(
-        values[ENV_BASE_URL], values[ENV_API_KEY], values[ENV_MODEL], auth_scheme=auth_scheme
+        values[ENV_BASE_URL],
+        values[ENV_API_KEY],
+        values[ENV_MODEL],
+        auth_scheme=auth_scheme,
+        timeout=float(saved.get("timeout") or 120.0),
+        max_retries=int(saved.get("max_retries") or 2),
     )

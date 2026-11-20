@@ -130,16 +130,17 @@ class TestOpenAICompatLLM:
 class TestMakeLLM:
     """环境变量驱动的 LLM 构造。"""
 
-    def _clear_env(self, monkeypatch):
+    def _clear_env(self, monkeypatch, tmp_path):
         for name in (ENV_BASE_URL, ENV_API_KEY, ENV_MODEL):
             monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("AQUANT_LLM_SETTINGS_PATH", str(tmp_path / "llm_settings.json"))
 
-    def test_no_env_falls_back_to_deterministic(self, monkeypatch):
-        self._clear_env(monkeypatch)
+    def test_no_env_falls_back_to_deterministic(self, monkeypatch, tmp_path):
+        self._clear_env(monkeypatch, tmp_path)
         assert isinstance(make_llm(), DeterministicLLM)
 
-    def test_full_env_builds_openai_compat(self, monkeypatch):
-        self._clear_env(monkeypatch)
+    def test_full_env_builds_openai_compat(self, monkeypatch, tmp_path):
+        self._clear_env(monkeypatch, tmp_path)
         monkeypatch.setenv(ENV_BASE_URL, "http://llm.example/v1")
         monkeypatch.setenv(ENV_API_KEY, "k")
         monkeypatch.setenv(ENV_MODEL, "m")
@@ -147,8 +148,8 @@ class TestMakeLLM:
         assert isinstance(llm, OpenAICompatLLM)
         assert llm.base_url == "http://llm.example/v1"
 
-    def test_partial_env_raises_value_error(self, monkeypatch):
-        self._clear_env(monkeypatch)
+    def test_partial_env_raises_value_error(self, monkeypatch, tmp_path):
+        self._clear_env(monkeypatch, tmp_path)
         monkeypatch.setenv(ENV_BASE_URL, "http://llm.example/v1")
         with pytest.raises(ValueError) as excinfo:
             make_llm()

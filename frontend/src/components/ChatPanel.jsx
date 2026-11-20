@@ -218,7 +218,7 @@ export default function ChatPanel({ notify, onSeedValidate, onSeedStudio }) {
             )}
           </button>
         </div>
-        <div className="form-hint">Ctrl / Cmd + Enter 快捷提交;超时上限 120 秒</div>
+        <div className="form-hint">Ctrl / Cmd + Enter 快捷提交;真实 LLM 管线最长约 7 分钟</div>
       </div>
 
       {/* 网络 / HTTP 错误条(同时已 toast) */}
