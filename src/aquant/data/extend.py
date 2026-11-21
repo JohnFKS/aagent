@@ -363,6 +363,33 @@ def ensure_coverage(
     }
 
 
+def _normalize_listed_dates(bundle_dir: str | Path) -> None:
+    """把 bundle 内所有 CS/ETF 合约的 listed_date 统一设为日历首日。
+
+    rqalpha 在 order_target_percent 等下单 API 中检查 listed_at(trading_dt),
+    若真实上市日 > 回测起始日,则视为"该日未上市"而拒单(即使 bundle 已有行情)。
+    统一设为日历首日消除此限制;实际数据可用性由 bars 行本身控制。
+    """
+    import pickle as _p
+
+    bundle = Path(bundle_dir)
+    cal = bundle_calendar(bundle)
+    if cal is None:
+        return
+    first_day = cal[0]
+    with open(bundle / "instruments.pk", "rb") as f:
+        instruments = _p.load(f)
+    changed = False
+    for inst in instruments:
+        if inst.get("type") in ("CS", "ETF") and inst.get("listed_date", "") != first_day:
+            if inst.get("listed_date", "") and inst["listed_date"] > first_day:
+                inst["listed_date"] = first_day
+                changed = True
+    if changed:
+        with open(bundle / "instruments.pk", "wb") as f:
+            _p.dump(instruments, f)
+
+
 def _rebuild_for_coverage(
     bundle: Path,
     out_dir: Path,
@@ -434,6 +461,13 @@ def _rebuild_for_coverage(
         from aquant.data.benchmark import inject_benchmark
 
         inject_benchmark(out_dir, index_frames)
+
+    # listed_date 统一设为日历首日:
+    # rqalpha 的 order_target_percent 在下单时检查 listed_at(trading_dt),
+    # 若 listed_date > 回测起始日(如 2024 年新上市的 ETF),rqalpha 视为"该日未上市"
+    # 而拒单。bundle 内行情本身已控制可用性(未上市的日期无 bar 数据),无需在
+    # instrument 层面二次过滤 —— 统一设为日历首日使任意标的在整个回测期间均可下单。
+    _normalize_listed_dates(out_dir)
 
     (out_dir / "bundle_meta.json").write_text(
         json.dumps(
