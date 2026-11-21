@@ -82,8 +82,14 @@ export default function ArenaCurveChart({ details, benchmarkSeries, benchmarkLab
         vertLine: { color: hexToRgba(accent, 0.55), labelBackgroundColor: borderColor },
         horzLine: { color: hexToRgba(accent, 0.55), labelBackgroundColor: borderColor },
       },
-      handleScroll: false,
-      handleScale: false,
+      // 时间轴交互:拖拽平移 + 滚轮/捏合缩放(双击时间轴复位;价格轴 autoScale)
+      handleScroll: { mouseDrag: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+      handleScale: {
+        mouseWheel: true,
+        pinch: true,
+        axisPressedMouseMove: { time: true, price: false },
+        axisDoubleClickReset: { time: true, price: false },
+      },
     });
 
     const lines = [];

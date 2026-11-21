@@ -108,9 +108,14 @@ export default function KlineChart({ candles }) {
         vertLine: { color: hexToRgba(accent, 0.55), labelBackgroundColor: borderColor },
         horzLine: { color: hexToRgba(accent, 0.55), labelBackgroundColor: borderColor },
       },
-      // 只读展示:不劫持页面滚动/捏合(crosshair 不受影响),与净值图一致
-      handleScroll: false,
-      handleScale: false,
+      // 时间轴交互:拖拽平移 + 滚轮/捏合缩放(双击时间轴复位;价格轴 autoScale)
+      handleScroll: { mouseDrag: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+      handleScale: {
+        mouseWheel: true,
+        pinch: true,
+        axisPressedMouseMove: { time: true, price: false },
+        axisDoubleClickReset: { time: true, price: false },
+      },
     });
 
     // A 股习惯:收涨(close >= open)红、收跌绿;影线/边框同色

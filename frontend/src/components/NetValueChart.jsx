@@ -8,6 +8,8 @@
 // - **固定 legend 信息条**:默认显示最新值,鼠标悬停显示对齐日期的策略/基准/回撤/相对强弱
 //   (TradingView 式,浮动 tooltip 保留给逐点详情);
 // - **高度可拖拽**:底部拖柄上下拉伸(180~720px,localStorage 记忆,双击复位);
+// - **时间轴交互**:鼠标左右拖拽平移日期段 + 滚轮/捏合缩放(TradingView 式),
+//   附区间快捷按钮(1月/3月/6月/1年/全部);水下副图保持只读并与主图联动;
 // - 数据来自 /api/backtest 与 /api/chat 响应(portfolio_series/benchmark_series/
 //   trades);字段缺失/为空时对应元素不渲染(图表是非关键路径);
 // - 时区陷阱:日期字符串 'yyyy-mm-dd' 直接传给 lightweight-charts(按 UTC 解析),
@@ -106,6 +108,20 @@ export default function NetValueChart({
   const tipRef = useRef(null); // 浮动 tooltip
   const legendRef = useRef(null); // 固定 legend 信息条
   const draggingRef = useRef(null); // 拖柄拖拽状态({startY, startH})
+  const chartRef = useRef(null); // 主图实例(区间按钮用,交互平移/缩放后复位)
+
+  // 区间快捷按钮:按交易日点数切窗(1月≈21 / 3月≈63 / 6月≈126 / 1年≈244 / 全部=fit)
+  const applyRange = (n) => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    if (n == null) {
+      chart.timeScale().fitContent();
+      return;
+    }
+    const len = points.length || bmPoints.length;
+    if (!len) return;
+    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, len - n), to: len + 1 });
+  };
 
   // ---- 拖拽调高:pointer 事件 + window 监听(捕获阶段,拖出容器也生效) ----
   useEffect(() => {
@@ -149,7 +165,17 @@ export default function NetValueChart({
     const gridColor = hexToRgba(readVar('--border-soft', '#1a2530'), 0.55);
     const borderColor = readVar('--border', '#223041');
 
-    const baseOptions = {
+    // 主图交互:拖拽平移 + 滚轮/捏合缩放(仅时间轴;价格轴 autoScale 不缩放)
+    const interactive = {
+      handleScroll: { mouseDrag: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+      handleScale: {
+        mouseWheel: true,
+        pinch: true,
+        axisPressedMouseMove: { time: true, price: false },
+        axisDoubleClickReset: { time: true, price: false },
+      },
+    };
+    const baseOptions = (mode) => ({
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
         textColor,
@@ -165,16 +191,15 @@ export default function NetValueChart({
         vertLine: { color: hexToRgba(accent, 0.55), labelBackgroundColor: borderColor },
         horzLine: { color: hexToRgba(accent, 0.55), labelBackgroundColor: borderColor },
       },
-      // 总览图不劫持页面滚动/捏合,只读展示(crosshair 不受影响)
-      handleScroll: false,
-      handleScale: false,
-    };
+      ...(mode === 'interactive' ? interactive : { handleScroll: false, handleScale: false }),
+    });
 
     const chart = createChart(body, {
-      ...baseOptions,
+      ...baseOptions('interactive'),
       width: body.clientWidth,
       height: body.clientHeight,
     });
+    chartRef.current = chart;
 
     // 策略净值:Area 主视觉(蓝色)
     let area = null;
@@ -258,7 +283,7 @@ export default function NetValueChart({
     let underArea = null;
     if (underBody && underPoints.length) {
       underChart = createChart(underBody, {
-        ...baseOptions,
+        ...baseOptions('readonly'),
         width: underBody.clientWidth,
         height: underBody.clientHeight,
         rightPriceScale: { ...baseOptions.rightPriceScale, visible: false },
@@ -435,6 +460,7 @@ export default function NetValueChart({
       if (roUnder) roUnder.disconnect();
       if (underChart) underChart.remove();
       chart.remove();
+      chartRef.current = null;
     };
   }, [points, bmPoints, tradesMarkers, dd, underPoints, benchmarkLabel]);
 
@@ -447,6 +473,19 @@ export default function NetValueChart({
     <section className="netvalue-chart" aria-label="策略净值与基准收益曲线">
       <div className="netvalue-chart-head">
         <span className="netvalue-title">收益图</span>
+        <div className="chart-range-btns" role="group" aria-label="显示区间">
+          {[
+            { label: '1月', n: 21 },
+            { label: '3月', n: 63 },
+            { label: '6月', n: 126 },
+            { label: '1年', n: 244 },
+            { label: '全部', n: null },
+          ].map((it) => (
+            <button key={it.label} type="button" className="chart-range-btn" onClick={() => applyRange(it.n)}>
+              {it.label}
+            </button>
+          ))}
+        </div>
         <span className="netvalue-legend">
           {points.length > 0 && (
             <>

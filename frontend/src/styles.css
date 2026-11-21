@@ -4100,3 +4100,25 @@ body.chart-resizing {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 .studio-benchmark-input:disabled { opacity: 0.55; }
+
+/* ---------- 图表时间轴交互(拖拽平移/滚轮缩放)+ 区间快捷按钮 ---------- */
+.chart-range-btns {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 10px;
+}
+.chart-range-btn {
+  padding: 2px 9px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.chart-range-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
