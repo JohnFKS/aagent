@@ -23,6 +23,7 @@ from aquant.agents.orchestrator import (
     _build_report,
     _extract_benchmark_series,
     _extract_bundle_extension,
+    _extract_run_log,
     _extract_trades,
     _extract_execution_error,
     _extract_metrics,
@@ -269,6 +270,7 @@ def run_edit_turn(
             benchmark_series: list[dict[str, Any]] = []
             trades_list: list[dict[str, Any]] = []
             bundle_extension: dict[str, Any] | None = None
+            run_log_info: dict[str, Any] | None = None
             break
 
         exec_kw: dict[str, Any] = {}
@@ -312,6 +314,7 @@ def run_edit_turn(
         benchmark_series = _extract_benchmark_series(result_obj)
         trades_list = _extract_trades(result_obj)
         bundle_extension = _extract_bundle_extension(result_obj)
+        run_log_info = _extract_run_log(result_obj)
         steps.append({
             "step": "backtest", "skipped": False, "rejected": False,
             "summary": "回测执行完成,指标已汇总。",
@@ -335,6 +338,7 @@ def run_edit_turn(
         "benchmark_series": benchmark_series,
         "trades": trades_list,
         "bundle_extension": bundle_extension,
+        "run_log": run_log_info,
         "report": report,
         "error": None,
     }

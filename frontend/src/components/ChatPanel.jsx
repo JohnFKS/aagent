@@ -10,6 +10,8 @@ import StepProgress from './StepProgress.jsx';
 import MetricsCards from './MetricsCards.jsx';
 import NetValueChart from './NetValueChart.jsx';
 import MonthlyReturnsTable from './MonthlyReturnsTable.jsx';
+import RunLogPanel from './RunLogPanel.jsx';
+import TradesTable from './TradesTable.jsx';
 import KlineChart from './KlineChart.jsx';
 import FindingsList from './FindingsList.jsx';
 import CodeBlock from './CodeBlock.jsx';
@@ -267,6 +269,8 @@ export default function ChatPanel({ notify, onSeedValidate, onSeedStudio }) {
           />
           <MonthlyReturnsTable series={result.portfolio_series} />
           <MetricsCards metrics={result.metrics} />
+          <TradesTable trades={result.trades} />
+          <RunLogPanel runLog={result.run_log} />
 
           {/* K 线(标的行情):默认折叠;展开后自动从生成代码推断标的拉取蜡烛图,
               推断不出(或上次查询报错)时给出输入框让用户填写;空数据只提示不渲染图 */}

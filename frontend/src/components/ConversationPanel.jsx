@@ -10,6 +10,8 @@ import MetricsCards, { formatValue } from './MetricsCards.jsx';
 import FindingsList from './FindingsList.jsx';
 import NetValueChart from './NetValueChart.jsx';
 import MonthlyReturnsTable from './MonthlyReturnsTable.jsx';
+import RunLogPanel from './RunLogPanel.jsx';
+import TradesTable from './TradesTable.jsx';
 import VersionTimeline from './VersionTimeline.jsx';
 import DiffView from './DiffView.jsx';
 
@@ -688,6 +690,8 @@ export default function ConversationPanel({ notify }) {
           series={lastResult?.portfolio_series ?? currentVersion?.backtest?.portfolio_series}
         />
         <MetricsCards metrics={lastResult?.metrics || currentVersion?.metrics || null} />
+        <TradesTable trades={lastResult?.trades ?? currentVersion?.backtest?.trades} />
+        <RunLogPanel runLog={lastResult?.run_log ?? currentVersion?.backtest?.run_log} />
         {lastResult?.verdict?.findings && (
           <FindingsList findings={lastResult.verdict.findings} emptyText="本轮无校验发现。" />
         )}

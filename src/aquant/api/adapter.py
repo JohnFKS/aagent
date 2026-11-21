@@ -63,6 +63,8 @@ class RealRunnerAdapter:
                 "unsafe": False,
                 "execution_error": str(exc),
                 "bundle_extension": extension,
+                "run_log": [],
+                "strategy_prints": [],
             }
         return {
             "summary": key_metrics(result),
@@ -72,4 +74,6 @@ class RealRunnerAdapter:
             "verdict": result.verdict,
             "unsafe": result.unsafe,
             "bundle_extension": extension,
+            "run_log": result.run_log,
+            "strategy_prints": result.strategy_prints,
         }

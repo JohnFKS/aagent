@@ -20,6 +20,8 @@ import MetricsCards from './MetricsCards.jsx';
 import KlineChart from './KlineChart.jsx';
 import NetValueChart from './NetValueChart.jsx';
 import MonthlyReturnsTable from './MonthlyReturnsTable.jsx';
+import RunLogPanel from './RunLogPanel.jsx';
+import TradesTable from './TradesTable.jsx';
 import FindingsList from './FindingsList.jsx';
 import CodeBlock from './CodeBlock.jsx';
 import VerifyResult from './VerifyResult.jsx';
@@ -905,6 +907,8 @@ export default function StudioPanel({ notify, studioSeed }) {
             />
             <MonthlyReturnsTable series={btRes.data.portfolio_series} />
             <MetricsCards metrics={btRes.data.metrics} />
+            <TradesTable trades={btRes.data.trades} />
+            <RunLogPanel runLog={btRes.data.run_log} />
             {btRes.data.verdict && (
               <>
                 <div className="verdict-counts mono sub-head">校验结论(四层校验)</div>

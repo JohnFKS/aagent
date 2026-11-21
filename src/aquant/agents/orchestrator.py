@@ -198,6 +198,7 @@ def run_conversation(
         "benchmark_series": benchmark_series,
         "trades": trades_list,
         "bundle_extension": _extract_bundle_extension(result_obj),
+        "run_log": _extract_run_log(result_obj),
         "review": merged,
         "report": report,
         "error": None,
@@ -359,24 +360,56 @@ def _extract_trades(result: Any, max_trades: int = 300) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         if isinstance(trades, pd.DataFrame) and not trades.empty:
             for _, t in trades.iterrows():
+                price = float(t["last_price"])
+                quantity = float(t["last_quantity"])
                 rows.append({
-                    "date": pd.Timestamp(t["datetime"]).strftime("%Y-%m-%d"),
+                    "date": pd.Timestamp(t["datetime"]).strftime("%Y-%m-%d %H:%M"),
+                    "order_book_id": str(t.get("order_book_id", "")),
+                    "symbol": str(t.get("symbol", "")),
                     "side": str(t["side"]),
-                    "price": float(t["last_price"]),
-                    "quantity": float(t["last_quantity"]),
+                    "price": price,
+                    "quantity": quantity,
+                    "amount": round(price * quantity, 2),
+                    "commission": float(t.get("commission", 0) or 0),
+                    "tax": float(t.get("tax", 0) or 0),
                 })
         else:
             for t in trades or []:
                 dt = getattr(t, "datetime", None)
+                price = float(getattr(t, "last_price", 0) or 0)
+                quantity = float(getattr(t, "last_quantity", 0) or 0)
                 rows.append({
-                    "date": pd.Timestamp(dt).strftime("%Y-%m-%d") if dt is not None else "",
+                    "date": pd.Timestamp(dt).strftime("%Y-%m-%d %H:%M") if dt is not None else "",
+                    "order_book_id": str(getattr(t, "order_book_id", "")),
+                    "symbol": str(getattr(t, "symbol", "")) if getattr(t, "instrument", None) else "",
                     "side": str(getattr(t, "side", "")),
-                    "price": float(getattr(t, "last_price", 0) or 0),
-                    "quantity": float(getattr(t, "last_quantity", 0) or 0),
+                    "price": price,
+                    "quantity": quantity,
+                    "amount": round(price * quantity, 2),
+                    "commission": float(getattr(t, "commission", 0) or 0),
+                    "tax": float(getattr(t, "tax", 0) or 0),
                 })
         return rows[:max_trades]
     except Exception:
         return []
+
+
+def _extract_run_log(result: Any, max_lines: int = 300) -> dict[str, Any]:
+    """提取运行日志(聚宽式逐日日志)与策略 print,超长截断(图表/对话非关键路径)。"""
+    run_log = result.get("run_log") if isinstance(result, dict) else getattr(result, "run_log", None)
+    prints = result.get("strategy_prints") if isinstance(result, dict) else getattr(result, "strategy_prints", None)
+    truncated = result.get("run_log_truncated", False) if isinstance(result, dict) else False
+    run_log = list(run_log or [])
+    prints = list(prints or [])
+    if not run_log and not prints:
+        return None
+    tail = run_log[-max_lines:]
+    return {
+        "lines": tail,
+        "total": len(run_log),
+        "truncated": bool(truncated or len(run_log) > max_lines),
+        "strategy_prints": prints[-80:],
+    }
 
 
 def _extract_bundle_extension(result: Any) -> dict[str, Any] | None:

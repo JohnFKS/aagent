@@ -8,10 +8,25 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
 import sys
 
 from aquant.compat import check_rqalpha_version
+
+# 哨兵行前缀:主进程 run_backtest 从 stdout 解析本行,拿回运行日志与策略 print
+RUN_META_SENTINEL = "@@AQUANT_RUN_META@@"
+
+
+def _emit_run_meta(log_lines: list[str], strategy_prints: list[str]) -> None:
+    """把运行日志写文件回读结果 + 策略 print 以哨兵行回传主进程(单行 JSON)。"""
+    meta = {
+        "run_log": log_lines,
+        "strategy_prints": strategy_prints,
+    }
+    print(RUN_META_SENTINEL + json.dumps(meta, ensure_ascii=False), file=sys.__stdout__, flush=True)
 
 
 def main() -> None:
@@ -26,7 +41,46 @@ def main() -> None:
 
     from rqalpha import run_file
 
-    run_file(strategy_file, config)
+    # 策略 print / logger 捕获:rqalpha 把策略 print 重定向到 user_log(logbook,
+    # stderr),通过包一层 init_logger 追加捕获 handler;时间戳为回测交易时间
+    import logbook
+
+    from rqalpha.utils import logger as rq_logger
+
+    user_lines: list[str] = []
+
+    class _UserLogCapture(logbook.Handler):
+        def __init__(self) -> None:
+            super().__init__(bubble=True)
+
+        def emit(self, record) -> None:
+            t = record.time.strftime("%Y-%m-%d %H:%M:%S") if getattr(record, "time", None) else ""
+            user_lines.append(f"{t} - {record.level_name} - {record.message}")
+
+    _orig_init_logger = rq_logger.init_logger
+
+    def _init_logger_with_capture() -> None:
+        _orig_init_logger()
+        handler = _UserLogCapture()
+        rq_logger.user_log.handlers.append(handler)
+        rq_logger.user_system_log.handlers.append(handler)
+
+    rq_logger.init_logger = _init_logger_with_capture
+
+    try:
+        run_file(strategy_file, config)
+    finally:
+        captured = user_lines[-500:]
+        # 平台日志 mod 的落盘产物(log_file 由 run_backtest 注入 mod 配置)
+        log_lines: list[str] = []
+        try:
+            log_file = (config.get("mod", {}).get("platform_log", {}) or {}).get("log_file")
+            if log_file and os.path.exists(log_file):
+                with open(log_file, encoding="utf-8") as f:
+                    log_lines = [ln.rstrip("\n") for ln in f if ln.strip()]
+        except Exception:
+            pass
+        _emit_run_meta(log_lines, captured[:500])
 
 
 if __name__ == "__main__":

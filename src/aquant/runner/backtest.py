@@ -26,6 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from aquant.config.schema import build_run_config, default_bundle_path
+from aquant.runner import _worker
 from aquant.validation.findings import Finding, RuleId, Severity, Verdict
 from aquant.validation.validator import validate_strategy
 
@@ -64,6 +65,10 @@ class BacktestResult:
     strategy_fingerprint: str = ""  # 策略代码哈希(同一指纹 ⇔ 同一代码)
     # 基准净值序列(sys_analyser 配置 base.benchmark 时才有;未配置为空表)
     benchmark_portfolio: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # 平台运行日志(聚宽式逐日:初始化/开盘前/成交/撤单/收盘结算)+ 策略 print
+    run_log: list[str] = field(default_factory=list)
+    strategy_prints: list[str] = field(default_factory=list)
+    run_log_truncated: bool = False
 
 
 def run_backtest(
@@ -113,6 +118,13 @@ def run_backtest(
         result_file = tmp_dir / "result.pkl"
         config["mod"]["sys_analyser"]["output_file"] = str(result_file)
 
+        # 平台日志 mod(聚宽式逐日日志):写入临时文件,worker 收尾经哨兵行回传
+        log_file = tmp_dir / "run_log.txt"
+        config.setdefault("mod", {})["platform_log"] = {
+            "enabled": True,
+            "lib": "aquant.runner.platform_log_mod",
+            "log_file": str(log_file),
+        }
         cfg_file = tmp_dir / "config.json"
         cfg_file.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
 
@@ -128,6 +140,22 @@ def run_backtest(
 
         with open(result_file, "rb") as f:
             raw = pickle.load(f)
+
+        # 解析 worker 哨兵行(运行日志 + 策略 print;哨兵缺失/损坏时静默降级)
+        run_log: list[str] = []
+        strategy_prints: list[str] = []
+        for line in (proc.stdout or "").splitlines():
+            if line.startswith(_worker.RUN_META_SENTINEL):
+                try:
+                    meta = json.loads(line[len(_worker.RUN_META_SENTINEL):])
+                    run_log = meta.get("run_log") or []
+                    strategy_prints = meta.get("strategy_prints") or []
+                except Exception:
+                    pass
+                break
+        run_log_truncated = len(run_log) > 2000 or len(strategy_prints) > 500
+        run_log = run_log[-2000:]
+        strategy_prints = strategy_prints[-500:]
 
     summary = dict(raw.get("summary", {}))
     portfolio = _normalize_portfolio(raw.get("portfolio"))
@@ -162,6 +190,9 @@ def run_backtest(
         config_fingerprint=config_fingerprint,
         strategy_fingerprint=hashlib.sha256(code.encode("utf-8")).hexdigest()[:16],
         benchmark_portfolio=benchmark_portfolio,
+        run_log=run_log,
+        strategy_prints=strategy_prints,
+        run_log_truncated=run_log_truncated,
     )
 
 

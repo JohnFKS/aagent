@@ -208,6 +208,37 @@ def format_backtest_report(result: dict[str, Any], *, benchmark_label: str | Non
             lines.append(f"- {icon} [{f.get('rule', '')}] {f.get('message', '')}")
         lines.append("")
 
+    # ---- 成交明细(前 20 笔) ----
+    trades = result.get("trades") or []
+    if trades and not isinstance(trades, pd.DataFrame):
+        lines.append("### 成交明细(最近 20 笔,完整明细见 trades 字段)")
+        lines.append("")
+        lines.append("| 时间 | 标的 | 方向 | 价格 | 数量 | 金额 | 费用 |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for t in list(reversed(trades))[:20]:
+            side = "买入" if str(t.get("side", "")).upper() == "BUY" else "卖出"
+            oid = t.get("order_book_id", "")
+            name = t.get("symbol", "")
+            amount = t.get("amount", float(t.get("price", 0)) * float(t.get("quantity", 0)))
+            fee = float(t.get("commission", 0) or 0) + float(t.get("tax", 0) or 0)
+            lines.append(
+                f"| {str(t.get('date', ''))[:16]} | {oid}({name}) | {side} "
+                f"| {float(t.get('price', 0)):,.3f} | {int(t.get('quantity', 0))} "
+                f"| {float(amount):,.2f} | {fee:,.2f} |"
+            )
+        lines.append("")
+
+    # ---- 运行日志(末 40 行,聚宽式) ----
+    run_log = result.get("run_log") or {}
+    log_lines = run_log.get("lines") or [] if isinstance(run_log, dict) else []
+    if log_lines:
+        lines.append("### 运行日志(末 40 行,完整日志见 run_log 字段)")
+        lines.append("")
+        lines.append("```")
+        lines.extend(log_lines[-40:])
+        lines.append("```")
+        lines.append("")
+
     # ---- 下一步建议(确定性规则,不含 LLM) ----
     lines.append("### 提示")
     lines.append("")

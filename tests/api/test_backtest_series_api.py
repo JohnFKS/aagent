@@ -131,8 +131,10 @@ def test_backtest_trades_detail_and_unknown_benchmark_400(client):
     assert resp.status_code == 200
     d = resp.json()
     assert d["trades"] == [
-        {"date": "2023-01-03", "side": "BUY", "price": 13.5, "quantity": 65300.0},
-        {"date": "2023-01-04", "side": "SELL", "price": 14.2, "quantity": 65300.0},
+        {"date": "2023-01-03 15:00", "order_book_id": "", "symbol": "", "side": "BUY",
+         "price": 13.5, "quantity": 65300.0, "amount": 881550.0, "commission": 0.0, "tax": 0.0},
+        {"date": "2023-01-04 15:00", "order_book_id": "", "symbol": "", "side": "SELL",
+         "price": 14.2, "quantity": 65300.0, "amount": 927260.0, "commission": 0.0, "tax": 0.0},
     ]
 
     # 未知基准 oid → 400 可读中文(而不是让 rqalpha 报未知合约)

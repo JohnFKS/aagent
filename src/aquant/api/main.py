@@ -325,6 +325,7 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
     from aquant.agents.orchestrator import (
         _extract_benchmark_series,
         _extract_portfolio_series,
+        _extract_run_log,
         _extract_trades,
     )
 
@@ -336,6 +337,10 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
         "portfolio_series": _extract_portfolio_series(result),
         "benchmark_series": _extract_benchmark_series(result),
         "trades": _extract_trades(result),
+        # /api/backtest 面向回测页(日志面板可回看全量),上限放宽到 2000 行
+        "run_log": _extract_run_log(result, max_lines=2000),
+        "strategy_prints": (result.get("strategy_prints") or [])[-80:]
+        if isinstance(result, dict) else [],
         "bundle_extension": result.get("bundle_extension") if isinstance(result, dict) else None,
         "benchmark": benchmark,
         "benchmark_label": _benchmark_label_of(benchmark),
@@ -752,6 +757,7 @@ def _backtest_version(
         _extract_benchmark_series,
         _extract_metrics,
         _extract_portfolio_series,
+        _extract_run_log,
         _extract_trades,
     )
 
@@ -796,6 +802,7 @@ def _backtest_version(
                 "portfolio_series": series,
                 "benchmark_series": benchmark_series,
                 "trades": _extract_trades(outcome["result"]),
+                "run_log": _extract_run_log(outcome["result"]),
                 "metrics": metrics,
             },
         )
@@ -804,6 +811,7 @@ def _backtest_version(
         "portfolio_series": series,
         "benchmark_series": benchmark_series,
         "trades": _extract_trades(outcome["result"]),
+        "run_log": _extract_run_log(outcome["result"]),
         "bundle_extension": outcome["result"].get("bundle_extension")
         if isinstance(outcome["result"], dict) else None,
         "benchmark": benchmark,
@@ -916,6 +924,7 @@ def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[st
                 "portfolio_series": outcome.get("portfolio_series"),
                 "benchmark_series": outcome.get("benchmark_series"),
                 "trades": outcome.get("trades"),
+                "run_log": outcome.get("run_log"),
                 "benchmark": outcome.get("benchmark"),
                 "benchmark_label": outcome.get("benchmark_label"),
                 "report": outcome.get("report"),
