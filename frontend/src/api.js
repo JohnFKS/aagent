@@ -179,6 +179,13 @@ export const api = {
     { method: 'DELETE' },
   ),
 
+  // ---- 本地数据管理(数据池盘点/预下载/删除/缓存清理) ----
+  // 预下载/删除为重建型操作(约 30~90s),超时放宽到 300s。
+  dataOverview: () => request('/api/data/overview', { method: 'GET' }),
+  dataFetch: (payload) => request('/api/data/fetch', { method: 'POST', body: payload, timeout: 300000 }),
+  dataRemoveInstruments: (payload) => request('/api/data/instruments/remove', { method: 'POST', body: payload, timeout: 300000 }),
+  dataCacheClear: () => request('/api/data/cache/clear', { method: 'POST', timeout: 60000 }),
+
   // ---- 大模型 API 设置 ----
   llmSettings: () => request('/api/settings/llm', { method: 'GET' }),
   saveLlmSettings: (payload) => request('/api/settings/llm', { method: 'PUT', body: payload }),

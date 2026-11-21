@@ -67,8 +67,29 @@ class DuckDBCache:
             [oid],
         ).fetchdf()
         if not rows.empty:
+            # 区间覆盖检查:缓存的日期范围必须覆盖 source 配置区间,否则拉取并合并
+            # (防止请求区间扩大后静默返回短历史 —— 准确性隐患)
+            src_start = getattr(self._source, "start", None)
+            src_end = getattr(self._source, "end", None)
+            if src_start is None or src_end is None:
+                self._touch(oid)
+                return self._frame(rows)  # 源无区间信息:维持旧命中语义
+            src_start = src_start.strftime("%Y-%m-%d")
+            src_end = src_end.strftime("%Y-%m-%d")
+            cached_min = str(rows["date"].iloc[0])
+            cached_max = str(rows["date"].iloc[-1])
+            if cached_min <= src_start and cached_max >= src_end:
+                self._touch(oid)
+                return self._frame(rows)
+            # 部分覆盖:仅向 source 请求缺口(尾部/头部),再 upsert 合并
+            df = self._source.daily_raw(oid)
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                self._touch(oid)
+                return self._frame(rows)
+            merged = self._upsert_frames(oid, df)
             self._touch(oid)
-            return self._frame(rows)
+            self.enforce_limits()
+            return merged
         df = self._source.daily_raw(oid)
         if not isinstance(df, pd.DataFrame) or df.empty:
             return df
@@ -87,16 +108,70 @@ class DuckDBCache:
         ).fetchdf()
         return self._frame(rows)
 
+    def _upsert_frames(self, oid: str, df: pd.DataFrame) -> pd.DataFrame:
+        """把 source 新拉取的日线 upsert 进缓存(以日期为准,新数据覆盖旧),返回合并帧。"""
+        import pandas as pd
+
+        upserts = []
+        for d, r in df.iterrows():
+            upserts.append(
+                (oid, pd.Timestamp(d).date(), float(r["open"]), float(r["high"]),
+                 float(r["low"]), float(r["close"]), float(r["volume"]),
+                 float(r["total_turnover"]))
+            )
+        if upserts:
+            self._con.executemany(
+                "INSERT OR REPLACE INTO daily_raw VALUES (?,?,?,?,?,?,?,?)", upserts
+            )
+            self._con.execute("CHECKPOINT")
+        rows = self._con.execute(
+            "SELECT date,open,high,low,close,volume,total_turnover FROM daily_raw WHERE oid=? ORDER BY date",
+            [oid],
+        ).fetchdf()
+        return self._frame(rows)
+
     def adjust_factor(self, oid: str) -> pd.Series:
         rows = self._con.execute(
             "SELECT date,factor FROM adjust_factor WHERE oid=? ORDER BY date", [oid]
         ).fetchdf()
         if not rows.empty:
-            self._touch(oid)
-            s = pd.Series(rows["factor"].to_numpy(),
-                          index=pd.DatetimeIndex(pd.to_datetime(rows["date"])), dtype=float)
-            s.name = "ex_cum_factor"
-            return s
+            src_start = getattr(self._source, "start", None)
+            src_end = getattr(self._source, "end", None)
+            if src_start is None or src_end is None:
+                self._touch(oid)
+                s = pd.Series(rows["factor"].to_numpy(),
+                              index=pd.DatetimeIndex(pd.to_datetime(rows["date"])), dtype=float)
+                s.name = "ex_cum_factor"
+                return s
+            src_start = src_start.strftime("%Y-%m-%d")
+            src_end = src_end.strftime("%Y-%m-%d")
+            cached_min = str(rows["date"].iloc[0])
+            cached_max = str(rows["date"].iloc[-1])
+            if cached_min <= src_start and cached_max >= src_end:
+                self._touch(oid)
+                s = pd.Series(rows["factor"].to_numpy(),
+                              index=pd.DatetimeIndex(pd.to_datetime(rows["date"])), dtype=float)
+                s.name = "ex_cum_factor"
+                return s
+            # 部分覆盖:整段替换为 source 最新因子表(事件驱动,直接替换更稳)
+            s = self._source.adjust_factor(oid)
+            if s is not None and len(s) > 0:
+                self._con.execute("DELETE FROM adjust_factor WHERE oid=?", [oid])
+                self._con.executemany(
+                    "INSERT OR REPLACE INTO adjust_factor VALUES (?,?,?)",
+                    [(oid, pd.Timestamp(d).date(), float(v)) for d, v in s.items()],
+                )
+                self._con.execute("CHECKPOINT")
+                self._touch(oid)
+            s2 = self._con.execute(
+                "SELECT date,factor FROM adjust_factor WHERE oid=? ORDER BY date", [oid]
+            ).fetchdf()
+            if s2.empty:
+                return s
+            out = pd.Series(s2["factor"].to_numpy(),
+                            index=pd.DatetimeIndex(pd.to_datetime(s2["date"])), dtype=float)
+            out.name = "ex_cum_factor"
+            return out
         s = self._source.adjust_factor(oid)
         if s is None or len(s) == 0:
             return s

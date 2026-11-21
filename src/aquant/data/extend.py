@@ -42,6 +42,7 @@ __all__ = [
     "extract_strategy_oids",
     "InstrumentUnavailableError",
     "mark_instruments_used",
+    "remove_instruments",
     "MAX_AUTO_INSTRUMENTS",
 ]
 
@@ -397,7 +398,9 @@ def _rebuild_for_coverage(
 
     selected = sources[0] if sources else None
     if selected is not None:
-        cache_key = f"autoextend_{getattr(selected, 'oids', len(cs_codes or []))}_{start}_{end}"
+        # 缓存 key 与代码清单无关(稳定 key):新增标的只拉新 oid,
+        # 存量 oid 经 daily_raw 的区间覆盖检查直接命中(零重拉)。
+        cache_key = "autoextend"
         try:
             from aquant.data.duckdb_cache import DuckDBCache
 
@@ -447,6 +450,104 @@ def _rebuild_for_coverage(
         encoding="utf-8",
     )
 
+
+
+def remove_instruments(
+    bundle_path: str | Path,
+    oids: set[str] | list[str],
+    *,
+    instrument_retention_days: int | None = None,
+) -> dict:
+    """从数据池删除指定标的(重建 bundle 保持既有覆盖区间不变)。
+
+    - 基准指数(INDX)不可删除;
+    - 台账与 DuckDB 行情缓存中对应条目一并清理;
+    - :raises ValueError: oid 不存在/类型不可删/清理后池为空。
+    """
+    bundle = Path(bundle_path)
+    remove_set = {str(o) for o in oids}
+    instruments = load_instruments(bundle)
+    unknown = sorted(remove_set - set(instruments))
+    if unknown:
+        raise ValueError(f"标的不在数据池中:{', '.join(unknown)}")
+    index_oids = {o for o in remove_set if instruments[o].get("type") == "INDX"}
+    if index_oids:
+        raise ValueError(f"基准指数不可删除:{', '.join(sorted(index_oids))}")
+
+    keep = [oid for oid in instruments if oid not in remove_set]
+    if not any(load_instruments(bundle)[o].get("type") in ("CS", "ETF") for o in keep):
+        raise ValueError("删除后数据池将不含任何可交易标的,拒绝执行。")
+
+    cal = bundle_calendar(bundle)
+    new_start, new_end = cal
+
+    t0 = time.time()
+    with _FileLock(bundle.with_name(bundle.name + ".extend.lock")):
+        new_dir = bundle.with_name(bundle.name + f".ext-{int(time.time())}")
+        old_dir = bundle.with_name(bundle.name + ".old")
+        try:
+            _rebuild_for_coverage(
+                bundle, new_dir, new_start, new_end,
+                cs_codes=sorted(keep), etf_codes=[], index_frames={},
+            )
+            if not bundle_calendar(new_dir):
+                raise RuntimeError("重建产物校验失败(缺 trading_dates/instruments)")
+            if old_dir.exists():
+                shutil.rmtree(old_dir, ignore_errors=True)
+            os.rename(bundle, old_dir)
+            try:
+                os.rename(new_dir, bundle)
+            except OSError:
+                os.rename(old_dir, bundle)
+                raise
+        except Exception as exc:  # noqa: BLE001
+            warnings.warn(f"数据池删除失败(已回滚):{exc}", stacklevel=2)
+            raise
+        finally:
+            if new_dir.exists():
+                shutil.rmtree(new_dir, ignore_errors=True)
+        if old_dir.exists():
+            shutil.rmtree(old_dir, ignore_errors=True)
+
+        # 台账同步清理
+        ledger_file = bundle / "instrument_usage.json"
+        try:
+            ledger = json.loads(ledger_file.read_text(encoding="utf-8"))
+            for oid in remove_set:
+                ledger.pop(oid, None)
+            ledger_file.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    # DuckDB 缓存同步清理对应 oid
+    removed_cache = 0
+    cache_dir = Path.home() / ".aquant" / "cache" / "duckdb"
+    import duckdb as _duckdb
+
+    for db_file in sorted(cache_dir.glob("*.duckdb")):
+        try:
+            con = _duckdb.connect(str(db_file))
+            try:
+                tables = {r[0] for r in con.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
+                ).fetchall()}
+                for oid in remove_set:
+                    for table in ("daily_raw", "adjust_factor", "json_cache", "access"):
+                        if table in tables:
+                            con.execute(f"DELETE FROM {table} WHERE oid=?", [oid])
+                removed_cache += len(remove_set)
+                con.execute("CHECKPOINT")
+            finally:
+                con.close()
+        except Exception:
+            continue
+
+    return {
+        "removed": sorted(remove_set),
+        "pool_size": len(load_instruments(bundle)),
+        "cache_oids_removed": removed_cache,
+        "elapsed_seconds": round(time.time() - t0, 1),
+    }
 
 
 def prune_stale_cache(cache_dir: str | Path, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:

@@ -37,9 +37,11 @@ from aquant.config.schema import build_run_config
 from aquant.config.schema import default_bundle_path
 from aquant.data.instruments import benchmark_exists, benchmark_label
 from aquant.validation.findings import Verdict
+from aquant.api.data_admin import router as data_admin_router
 from aquant.verify.arena import run_arena
 
 app = FastAPI(title="AQ-Platform API", version=__version__)
+app.include_router(data_admin_router)
 
 # 依赖注入挂载点:测试可整体替换;为 None 时按需惰性构造
 # (llm: LLMClient;runner: agents.backtest_agent.Runner)
