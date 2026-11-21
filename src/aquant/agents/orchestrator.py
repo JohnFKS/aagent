@@ -101,6 +101,7 @@ def run_conversation(
                 "metrics": None,
                 "portfolio_series": None,
                 "benchmark_series": None,
+                "trades": None,
                 "review": [],
                 "report": None,
                 "error": str(exc),
@@ -124,6 +125,7 @@ def run_conversation(
             metrics = None
             portfolio_series: list | None = []
             benchmark_series: list | None = []
+            trades_list: list | None = []
             break
 
         exec_kw: dict[str, Any] = {}
@@ -164,6 +166,7 @@ def run_conversation(
         metrics = _extract_metrics(result_obj, start, end)
         portfolio_series = _extract_portfolio_series(result_obj)
         benchmark_series = _extract_benchmark_series(result_obj)
+        trades_list = _extract_trades(result_obj)
         steps.append({"step": "backtest", "skipped": False, "rejected": False,
                       "summary": "回测执行完成,指标已汇总。" if metrics else "回测已执行,未取到 summary 指标。"})
         break
@@ -193,6 +196,7 @@ def run_conversation(
         "metrics": metrics,
         "portfolio_series": portfolio_series,
         "benchmark_series": benchmark_series,
+        "trades": trades_list,
         "review": merged,
         "report": report,
         "error": None,
@@ -233,6 +237,7 @@ def _terminated(steps: list[dict[str, Any]], *, code: str | None, verdict: Verdi
         "metrics": None,
         "portfolio_series": None,
         "benchmark_series": None,
+        "trades": None,
         "review": [],
         "report": None,
         "error": error,
@@ -335,6 +340,40 @@ def _extract_benchmark_series(result: Any, max_points: int = 400) -> list[dict[s
             }
 
         return [_point(i) for i in picked]
+    except Exception:
+        return []
+
+
+def _extract_trades(result: Any, max_trades: int = 300) -> list[dict[str, Any]]:
+    """从 Runner 返回中提取成交明细([{date, side, price, quantity}]),供前端图上标记。
+
+    rqalpha 6.5.0 trades 为 DataFrame(datetime/side/last_price/last_quantity),
+    旧版本兼容 Trade 对象列表。超过 max_trades 截断(标记是辅助信息,图表非关键
+    路径);任何异常返回空列表。
+    """
+    import pandas as pd
+
+    trades = result.get("trades", []) if isinstance(result, dict) else getattr(result, "trades", [])
+    try:
+        rows: list[dict[str, Any]] = []
+        if isinstance(trades, pd.DataFrame) and not trades.empty:
+            for _, t in trades.iterrows():
+                rows.append({
+                    "date": pd.Timestamp(t["datetime"]).strftime("%Y-%m-%d"),
+                    "side": str(t["side"]),
+                    "price": float(t["last_price"]),
+                    "quantity": float(t["last_quantity"]),
+                })
+        else:
+            for t in trades or []:
+                dt = getattr(t, "datetime", None)
+                rows.append({
+                    "date": pd.Timestamp(dt).strftime("%Y-%m-%d") if dt is not None else "",
+                    "side": str(getattr(t, "side", "")),
+                    "price": float(getattr(t, "last_price", 0) or 0),
+                    "quantity": float(getattr(t, "last_quantity", 0) or 0),
+                })
+        return rows[:max_trades]
     except Exception:
         return []
 

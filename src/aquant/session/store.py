@@ -74,8 +74,12 @@ class SessionStore:
         code: str | None = None,
         title: str | None = None,
         cash: float | None = None,
+        benchmark: str | None = None,
     ) -> dict[str, Any]:
-        """新建会话;code 非空时落为 v1(initial),否则 sessions 无版本(首轮由 agent 生成)。"""
+        """新建会话;code 非空时落为 v1(initial),否则 sessions 无版本(首轮由 agent 生成)。
+
+        benchmark: 基准 oid 或 'none'(不设基准);None = 平台默认。
+        """
         with self._LOCK:
             sid = "s_" + uuid.uuid4().hex[:10]
             ts = _now()
@@ -88,6 +92,7 @@ class SessionStore:
                 "start": start,
                 "end": end,
                 "cash": cash,
+                "benchmark": benchmark,
                 "current_version": None,
                 "versions": [],
                 "turns": [],
@@ -145,11 +150,16 @@ class SessionStore:
         start: str | None = None,
         end: str | None = None,
         cash: float | None = None,
+        benchmark: str | None = None,
     ) -> dict[str, Any]:
-        """更新会话元信息(仅覆盖非 None 字段,避免 PATCH 未传字段被误清空)。"""
+        """更新会话元信息(仅覆盖非 None 字段,避免 PATCH 未传字段被误清空)。
+
+        benchmark 取字符串值('none' = 显式不设基准),None = 不修改。
+        """
         with self._LOCK:
             data = self._require(sid)
-            for key, value in (("title", title), ("start", start), ("end", end), ("cash", cash)):
+            for key, value in (("title", title), ("start", start), ("end", end),
+                               ("cash", cash), ("benchmark", benchmark)):
                 if value is not None:
                     data[key] = value
             return self._write(sid, data)

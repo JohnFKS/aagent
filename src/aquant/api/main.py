@@ -16,6 +16,7 @@ aquant.runner 的 StrategyValidationError 在此层映射为 422 + verdict
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -34,6 +35,7 @@ from aquant.api.token_gate import require_mcp_token
 from aquant.config.schema import build_run_config
 # 追加式导入(不改动既有行):default_bundle_path 供 /api/arena 的 bundle 预检
 from aquant.config.schema import default_bundle_path
+from aquant.data.instruments import benchmark_exists, benchmark_label
 from aquant.validation.findings import Verdict
 from aquant.verify.arena import run_arena
 
@@ -71,6 +73,31 @@ def _resolve_benchmark(raw: str | None) -> str | None:
     if not text or text.lower() == "none":
         return None
     return text
+
+
+def _benchmark_label_of(oid: str | None) -> str:
+    """基准图例名:指数内置映射 → bundle 合约名 → 回退裸 oid。"""
+    return benchmark_label(oid, default_bundle_path())
+
+
+def _benchmark_check_or_400(benchmark: str | None):
+    """基准 oid 预校验:不在 bundle 的 oid 给可读 400,而不是让 rqalpha 报未知合约。
+
+    :returns: None(合法或未设基准)或 JSONResponse(400)
+    """
+    if benchmark and not benchmark_exists(benchmark, default_bundle_path()):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": (
+                    f"基准合约 {benchmark} 不在当前数据 bundle 中,无法作为基准。"
+                    "请改用上证指数(000001.XSHG)、沪深300(000300.XSHG)或 bundle 内任意标的"
+                    "(可用 /api/kline 的可用合约提示,或查看编写指南标的池)。"
+                ),
+                "reason": f"unknown benchmark oid: {benchmark}",
+            },
+        )
+    return None
 
 
 def _benchmark_meta() -> dict[str, Any]:
@@ -183,6 +210,10 @@ def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
     prompt(复盘-反思-优化闭环,见 docs/design.md §1.2)。store 挂在
     app.state 上可被测试整体替换。
     """
+    benchmark = _resolve_benchmark(req.benchmark)
+    check = _benchmark_check_or_400(benchmark)
+    if check is not None:
+        return check
     store = getattr(request.app.state, "experience", None)
     if store is None:
         from aquant.agents.experience import ExperienceStore
@@ -190,15 +221,18 @@ def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
         store = ExperienceStore()
         request.app.state.experience = store
     try:
-        return run_conversation(
+        outcome = run_conversation(
             req.text,
             req.start,
             req.end,
             llm=_get_llm(request),
             runner=_get_runner(request),
             experience=store,
-            benchmark=_resolve_benchmark(req.benchmark),
+            benchmark=benchmark,
         )
+        outcome["benchmark"] = benchmark
+        outcome["benchmark_label"] = _benchmark_label_of(benchmark)
+        return outcome
     except FileNotFoundError as exc:
         # 真实回测需要 bundle;缺失属于用户可修复的环境问题,给 400 + 指引而非 500
         return JSONResponse(status_code=400, content={"detail": BUNDLE_GUIDANCE, "reason": str(exc)})
@@ -217,6 +251,9 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
     供前端绘制"策略 vs A股基准"收益图。
     """
     benchmark = _resolve_benchmark(req.benchmark)
+    check = _benchmark_check_or_400(benchmark)
+    if check is not None:
+        return check
     # 校验配置:overrides 并入后交 Layer 1 lint(激进值在此被拦)
     run_config = build_run_config(
         req.start, req.end, cash=req.cash, benchmark=benchmark,
@@ -266,8 +303,12 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
                 "execution_error": str(exec_error)[-2000:],
             },
         )
-    # 净值序列(策略 vs 基准):供前端收益图;非关键路径,提取失败返回空列表
-    from aquant.agents.orchestrator import _extract_benchmark_series, _extract_portfolio_series
+    # 净值序列(策略 vs 基准)+ 成交明细(图上买卖标记):非关键路径,失败降级空值
+    from aquant.agents.orchestrator import (
+        _extract_benchmark_series,
+        _extract_portfolio_series,
+        _extract_trades,
+    )
 
     return {
         "passed": True,
@@ -276,8 +317,9 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
         "trades_count": trades_count,
         "portfolio_series": _extract_portfolio_series(result),
         "benchmark_series": _extract_benchmark_series(result),
+        "trades": _extract_trades(result),
         "benchmark": benchmark,
-        "benchmark_label": _BENCHMARK_LABELS.get(benchmark or "", benchmark or ""),
+        "benchmark_label": _benchmark_label_of(benchmark),
     }
 
 
@@ -330,6 +372,9 @@ class ArenaRequest(BaseModel):
     start: str = Field(description="回测起始日 YYYY-MM-DD")
     end: str = Field(description="回测结束日 YYYY-MM-DD")
     cash: float | None = Field(default=None, description="初始资金,缺省用平台默认")
+    benchmark: str | None = Field(
+        default=None, description="基准 oid;None=平台默认(上证指数),'none'=不设基准"
+    )
 
 
 @app.post("/api/arena", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
@@ -356,13 +401,20 @@ def arena(req: ArenaRequest, request: Request) -> dict[str, Any]:
                 status_code=400,
                 content={"detail": BUNDLE_GUIDANCE, "reason": f"数据 bundle 不存在:{bundle_path}"},
             )
-    return run_arena(
+    benchmark = _resolve_benchmark(req.benchmark)
+    check = _benchmark_check_or_400(benchmark)
+    if check is not None:
+        return check
+    outcome = run_arena(
         [{"name": c.name, "code": c.code} for c in req.candidates],
         req.start,
         req.end,
         cash=req.cash,
+        benchmark=benchmark,
         runner=runner,
     )
+    outcome["benchmark_label"] = _benchmark_label_of(benchmark)
+    return outcome
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +643,7 @@ class SessionCreateRequest(BaseModel):
     code: str | None = Field(default=None, description="初始策略代码(空则首轮由 Agent 生成)")
     title: str | None = Field(default=None, description="会话标题")
     cash: float | None = Field(default=None, description="初始资金,缺省用平台默认")
+    benchmark: str | None = Field(default=None, description="基准 oid 或 'none';None=平台默认(上证指数)")
 
 
 class SessionUpdateRequest(BaseModel):
@@ -598,6 +651,7 @@ class SessionUpdateRequest(BaseModel):
     start: str | None = None
     end: str | None = None
     cash: float | None = None
+    benchmark: str | None = Field(default=None, description="基准 oid 或 'none';None=不修改")
 
 
 class SessionTurnRequest(BaseModel):
@@ -669,10 +723,14 @@ def _backtest_version(
         _extract_benchmark_series,
         _extract_metrics,
         _extract_portfolio_series,
+        _extract_trades,
     )
 
     start, end = session["start"], session["end"]
     benchmark = _resolve_benchmark(session.get("benchmark"))
+    check = _benchmark_check_or_400(benchmark)
+    if check is not None:
+        raise HTTPException(status_code=400, detail=json.loads(check.body.decode("utf-8"))["detail"])
     run_config = build_run_config(start, end, cash=session.get("cash"), benchmark=benchmark)
     verifier = ValidationAgent()
     verdict = verifier.validate(code, run_config)
@@ -703,12 +761,20 @@ def _backtest_version(
         _get_store(request).update_version(
             sid, current_id,
             metrics=metrics, verdict=verdict.to_dict(),
-            backtest={"portfolio_series": series, "benchmark_series": benchmark_series, "metrics": metrics},
+            backtest={
+                "portfolio_series": series,
+                "benchmark_series": benchmark_series,
+                "trades": _extract_trades(outcome["result"]),
+                "metrics": metrics,
+            },
         )
     return {
         "metrics": metrics,
         "portfolio_series": series,
         "benchmark_series": benchmark_series,
+        "trades": _extract_trades(outcome["result"]),
+        "benchmark": benchmark,
+        "benchmark_label": _benchmark_label_of(benchmark),
         "verdict": verdict.to_dict(),
     }
 
@@ -722,7 +788,8 @@ def list_sessions(request: Request) -> dict[str, Any]:
 @app.post("/api/sessions", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
 def create_session(req: SessionCreateRequest, request: Request) -> dict[str, Any]:
     session = _get_store(request).create(
-        start=req.start, end=req.end, code=req.code, title=req.title, cash=req.cash
+        start=req.start, end=req.end, code=req.code, title=req.title, cash=req.cash,
+        benchmark=req.benchmark,
     )
     return {"session": session}
 
@@ -736,7 +803,8 @@ def get_session(sid: str, request: Request) -> dict[str, Any]:
 def update_session(sid: str, req: SessionUpdateRequest, request: Request) -> dict[str, Any]:
     _require_session(request, sid)
     session = _get_store(request).update(
-        sid, title=req.title, start=req.start, end=req.end, cash=req.cash
+        sid, title=req.title, start=req.start, end=req.end, cash=req.cash,
+        benchmark=req.benchmark,
     )
     return {"session": session}
 
@@ -769,6 +837,10 @@ def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[st
         experience = ExperienceStore()
         request.app.state.experience = experience
 
+    session_benchmark = _resolve_benchmark(session.get("benchmark"))
+    check = _benchmark_check_or_400(session_benchmark)
+    if check is not None:
+        raise HTTPException(status_code=400, detail=json.loads(check.body.decode("utf-8"))["detail"])
     try:
         if current is None:
             # 首轮无既有策略:走既有从零生成管线(自带 review)。
@@ -776,17 +848,21 @@ def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[st
                 req.text, session["start"], session["end"],
                 llm=llm, runner=runner, experience=experience,
                 cash=session.get("cash"),
-                benchmark=_resolve_benchmark(session.get("benchmark")),
+                benchmark=session_benchmark,
             )
+            outcome["benchmark"] = session_benchmark
+            outcome["benchmark_label"] = _benchmark_label_of(session_benchmark)
             outcome.setdefault("analysis", "首轮由 Agent 根据需求生成初始策略。")
         else:
             outcome = run_edit_turn(
                 req.text, current["code"], history, session["start"], session["end"],
                 llm=llm, runner=runner, experience=experience,
                 metrics=current.get("metrics"), cash=session.get("cash"),
-                benchmark=_resolve_benchmark(session.get("benchmark")),
+                benchmark=session_benchmark,
                 backtest=req.backtest,
             )
+            outcome["benchmark"] = session_benchmark
+            outcome["benchmark_label"] = _benchmark_label_of(session_benchmark)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=f"{BUNDLE_GUIDANCE} 原始错误:{exc}") from exc
     except LLMAPIError as exc:
@@ -805,6 +881,10 @@ def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[st
             backtest={
                 "steps": outcome.get("steps"),
                 "portfolio_series": outcome.get("portfolio_series"),
+                "benchmark_series": outcome.get("benchmark_series"),
+                "trades": outcome.get("trades"),
+                "benchmark": outcome.get("benchmark"),
+                "benchmark_label": outcome.get("benchmark_label"),
                 "report": outcome.get("report"),
             },
         )
@@ -818,6 +898,11 @@ def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[st
         result={
             "ok": outcome.get("ok"), "rejected": outcome.get("rejected"),
             "steps": outcome.get("steps"), "metrics": outcome.get("metrics"),
+            "portfolio_series": outcome.get("portfolio_series"),
+            "benchmark_series": outcome.get("benchmark_series"),
+            "trades": outcome.get("trades"),
+            "benchmark": outcome.get("benchmark"),
+            "benchmark_label": outcome.get("benchmark_label"),
             "verdict": outcome.get("verdict"), "error": outcome.get("error"),
         },
     )

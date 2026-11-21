@@ -9,6 +9,7 @@ import { SAMPLE_REQUIREMENT, DEFAULT_START, DEFAULT_END } from '../samples.js';
 import StepProgress from './StepProgress.jsx';
 import MetricsCards from './MetricsCards.jsx';
 import NetValueChart from './NetValueChart.jsx';
+import MonthlyReturnsTable from './MonthlyReturnsTable.jsx';
 import KlineChart from './KlineChart.jsx';
 import FindingsList from './FindingsList.jsx';
 import CodeBlock from './CodeBlock.jsx';
@@ -246,14 +247,19 @@ export default function ChatPanel({ notify, onSeedValidate, onSeedStudio }) {
       {/* 结果区:仅在有结果后渲染 */}
       {result && (
         <div className="chat-result">
-          <MetricsCards metrics={result.metrics} />
-
-          {/* 收益图(策略净值 vs A股基准):指标卡与校验结论之间;序列为 null/空时组件自身不渲染 */}
+          {/* 收益图(策略净值 vs A股基准 + 回撤/交易标记):序列为 null/空时组件自身不渲染 */}
           <NetValueChart
             series={result.portfolio_series}
             benchmarkSeries={result.benchmark_series}
-            benchmarkLabel="A股基准(上证指数)"
+            benchmarkLabel={
+              result.benchmark && result.benchmark !== 'none'
+                ? `A股基准(${result.benchmark_label || result.benchmark})`
+                : ''
+            }
+            trades={result.trades}
           />
+          <MonthlyReturnsTable series={result.portfolio_series} />
+          <MetricsCards metrics={result.metrics} />
 
           {/* K 线(标的行情):默认折叠;展开后自动从生成代码推断标的拉取蜡烛图,
               推断不出(或上次查询报错)时给出输入框让用户填写;空数据只提示不渲染图 */}

@@ -1,35 +1,47 @@
-// 净值曲线图(lightweight-charts v4,策略 Area 图 + A股基准 Line 图):
-// - 数据来自 /api/chat 或 /api/backtest 响应的 portfolio_series / benchmark_series
-//   ([{date, net_value}],均归一化首日 = 1.0);回测被拒/跳过时字段为 null / 缺失 /
-//   空数组,本组件按有数据的序列渲染(图表是非关键路径);
-// - 主题:颜色全部从 styles.css 的 CSS 变量读取,背景透明、网格淡色、策略曲线用主
-//   强调色(蓝)、基准曲线用 --warn(金);A 股"涨红跌绿"在单 series 单色下不可行,
-//   统一用强调色(指标卡仍保留红绿语义);
-// - 基线 1.0 用虚线 priceLine;十字线跟随 tooltip 自实现(日期 + 策略/基准净值 +
-//   相对强弱:跑赢基准红 / 跑输绿,A 股语义);
+// 收益图(lightweight-charts v4):策略净值 Area 图 + A股基准 Line 图 + 回撤分析。
+// 对标成熟量化平台(聚宽/米筐回测报告、TradingView)的净值图交互:
+// - **主图**:策略净值(蓝,首日归一 1.0)+ 基准净值(金)+ 1.0 虚线基线 +
+//   **最大回撤区间阴影带**(峰值→谷底,红色半透明,谷底标记 −x.x%)+
+//   **交易标记**(B 红上箭头 / S 绿下箭头,来自 /api/backtest 的 trades 明细);
+// - **水下副图**(默认开启):全程回撤百分比曲线(1 - 净值/历史峰值),
+//   与主图 timeScale 双向联动、十字线同步,直观看到每段回撤的深度与时长;
+// - **固定 legend 信息条**:默认显示最新值,鼠标悬停显示对齐日期的策略/基准/回撤/相对强弱
+//   (TradingView 式,浮动 tooltip 保留给逐点详情);
+// - **高度可拖拽**:底部拖柄上下拉伸(180~720px,localStorage 记忆,双击复位);
+// - 数据来自 /api/backtest 与 /api/chat 响应(portfolio_series/benchmark_series/
+//   trades);字段缺失/为空时对应元素不渲染(图表是非关键路径);
 // - 时区陷阱:日期字符串 'yyyy-mm-dd' 直接传给 lightweight-charts(按 UTC 解析),
-//   展示与原始日期一致,不做任何 new Date('...') 本地时区转换;
-// - 响应式:ResizeObserver 跟随容器尺寸重设图表,组件卸载时 chart.remove()。
-import { useEffect, useMemo, useRef } from 'react';
+//   不做 new Date() 本地时区换算;颜色全部从 styles.css CSS 变量读取。
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType, CrosshairMode, LineStyle } from 'lightweight-charts';
+import { computeDrawdown, normalizeSeries, tradeMarkers, underwaterSeries } from '../chartUtils.js';
 
-// 只接受 'yyyy-mm-dd' 形态的日期,其余一律丢弃
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// 高度记忆(localStorage 键)+ 高度范围
+const LS_HEIGHT = 'aquant_chart_height';
+const HEIGHT_MIN = 180;
+const HEIGHT_MAX = 720;
+const HEIGHT_DEFAULT = 320;
+const UNDERWATER_HEIGHT = 110; // 水下副图固定高
 
-// 清洗后端序列:过滤非法日期/非有限数值,日期升序去重(库要求 time 唯一递增)
-function normalizeSeries(raw) {
-  if (!Array.isArray(raw)) return [];
-  const seen = new Set();
-  const points = [];
-  for (const item of raw) {
-    const date = typeof item?.date === 'string' ? item.date.slice(0, 10) : '';
-    const value = Number(item?.net_value);
-    if (!DATE_RE.test(date) || !Number.isFinite(value) || seen.has(date)) continue;
-    seen.add(date);
-    points.push({ time: date, value });
+function clampHeight(h) {
+  if (!Number.isFinite(h)) return HEIGHT_DEFAULT;
+  return Math.min(HEIGHT_MAX, Math.max(HEIGHT_MIN, Math.round(h)));
+}
+
+function readStoredHeight() {
+  try {
+    return clampHeight(Number(localStorage.getItem(LS_HEIGHT)));
+  } catch {
+    return HEIGHT_DEFAULT;
   }
-  points.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
-  return points;
+}
+
+function storeHeight(h) {
+  try {
+    localStorage.setItem(LS_HEIGHT, String(h));
+  } catch {
+    /* 隐私模式/配额:静默失败(高度不记忆,不影响功能) */
+  }
 }
 
 // '#rrggbb' → 'rgba(r,g,b,a)';非 hex 时原样返回(防御:变量被改写成 rgb() 形态)
@@ -53,36 +65,97 @@ function formatDate(t) {
   return '';
 }
 
-export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel = 'A股基准' }) {
-  // useMemo/useRef/useEffect 恒定调用(hooks 顺序稳定),无数据时仅渲染 null
+// 固定 legend 信息条的一次刷新(直接写 DOM,不走 React state,避免高频重渲染)
+function renderLegendRow(el, snapshot) {
+  if (!el) return;
+  const seg = (label, value, cls) =>
+    `<span class="nl-item${cls ? ` ${cls}` : ''}"><b>${label}</b>${value}</span>`;
+  const parts = [`<span class="nl-date">${snapshot.date}</span>`];
+  if (snapshot.strategy != null) parts.push(seg('策略', snapshot.strategy.toFixed(4), 'nl-strategy'));
+  if (snapshot.benchmark != null) parts.push(seg(snapshot.bmLabel, snapshot.benchmark.toFixed(4), 'nl-bm'));
+  if (snapshot.dd != null && snapshot.dd > 0.0005) {
+    parts.push(seg('回撤', `-${(snapshot.dd * 100).toFixed(2)}%`, 'nl-dd'));
+  }
+  if (snapshot.strategy != null && snapshot.benchmark != null) {
+    const diff = snapshot.strategy - snapshot.benchmark;
+    const cls = diff > 0 ? 'tip-up' : diff < 0 ? 'tip-down' : '';
+    parts.push(seg('相对', `${diff >= 0 ? '+' : ''}${(diff * 100).toFixed(2)}%`, cls));
+  }
+  el.innerHTML = parts.join('');
+}
+
+export default function NetValueChart({
+  series,
+  benchmarkSeries,
+  benchmarkLabel = 'A股基准',
+  trades,
+  showUnderwater = true,
+}) {
   const points = useMemo(() => normalizeSeries(series), [series]);
   const bmPoints = useMemo(() => normalizeSeries(benchmarkSeries), [benchmarkSeries]);
-  const bodyRef = useRef(null);
-  const tipRef = useRef(null);
+  const tradesMarkers = useMemo(() => tradeMarkers(trades), [trades]);
+  const dd = useMemo(() => computeDrawdown(points), [points]);
+  const underPoints = useMemo(
+    () => (showUnderwater && points.length >= 2 ? underwaterSeries(points) : []),
+    [points, showUnderwater],
+  );
+
+  const [bodyHeight, setBodyHeight] = useState(readStoredHeight);
+  const bodyRef = useRef(null); // 主图容器
+  const underRef = useRef(null); // 水下副图容器
+  const tipRef = useRef(null); // 浮动 tooltip
+  const legendRef = useRef(null); // 固定 legend 信息条
+  const draggingRef = useRef(null); // 拖柄拖拽状态({startY, startH})
+
+  // ---- 拖拽调高:pointer 事件 + window 监听(捕获阶段,拖出容器也生效) ----
+  useEffect(() => {
+    if (!points.length && !bmPoints.length) return undefined;
+    const onMove = (e) => {
+      const drag = draggingRef.current;
+      if (!drag) return;
+      const next = clampHeight(drag.startH + (drag.startY - e.clientY));
+      setBodyHeight(next);
+    };
+    const onUp = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = null;
+      document.body.classList.remove('chart-resizing');
+      setBodyHeight((h) => {
+        storeHeight(h);
+        return h;
+      });
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.classList.remove('chart-resizing');
+    };
+  }, [points.length, bmPoints.length]);
 
   useEffect(() => {
     const body = bodyRef.current;
+    const underBody = underRef.current;
     const tip = tipRef.current;
     if ((!points.length && !bmPoints.length) || !body || !tip) return undefined;
 
-    // 主题色:运行时从 :root CSS 变量读取,与 styles.css 深色主题保持一致
     const css = getComputedStyle(document.documentElement);
     const readVar = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
     const accent = readVar('--accent', '#3aa2ff');
     const bmColor = readVar('--warn', '#e6b450');
+    const upColor = readVar('--up', '#ff5d5d');
     const textColor = readVar('--text-dim', '#93a4b5');
     const gridColor = hexToRgba(readVar('--border-soft', '#1a2530'), 0.55);
     const borderColor = readVar('--border', '#223041');
 
-    const chart = createChart(body, {
-      width: body.clientWidth,
-      height: body.clientHeight,
+    const baseOptions = {
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
         textColor,
         fontSize: 11.5,
         fontFamily: "SFMono-Regular, 'JetBrains Mono', Consolas, monospace",
-        attributionLogo: false, // 关闭 TradingView 署名外链(4.1+ 官方选项;只读总览图不留可点击外链)
+        attributionLogo: false, // 关闭 TradingView 署名外链(4.1+ 官方选项)
       },
       grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
       rightPriceScale: { borderColor },
@@ -95,6 +168,12 @@ export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel 
       // 总览图不劫持页面滚动/捏合,只读展示(crosshair 不受影响)
       handleScroll: false,
       handleScale: false,
+    };
+
+    const chart = createChart(body, {
+      ...baseOptions,
+      width: body.clientWidth,
+      height: body.clientHeight,
     });
 
     // 策略净值:Area 主视觉(蓝色)
@@ -105,11 +184,11 @@ export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel 
         topColor: hexToRgba(accent, 0.26),
         bottomColor: 'rgba(58, 162, 255, 0)',
         lineWidth: 2,
-        priceLineVisible: false, // 不画"最新值"水平线,只保留 1.0 基线
+        priceLineVisible: false,
         lastValueVisible: true,
       });
       area.setData(points);
-      // 基线 1.0:虚线价格线(净值图习惯,一眼看出相对首日盈亏)
+      // 1.0 保本基线(虚线)
       area.createPriceLine({
         price: 1.0,
         color: textColor,
@@ -120,7 +199,21 @@ export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel 
       });
     }
 
-    // A股基准:金色细实线(与策略曲线同区间对照;两条线同归一化首日 = 1.0)
+    // 最大回撤区间:峰值→谷底 高水线之下的红色半透明"阴影带"(线透明,只有填充)
+    let ddBand = null;
+    if (area && dd.window.length >= 2) {
+      ddBand = chart.addAreaSeries({
+        lineColor: 'rgba(0,0,0,0)',
+        topColor: hexToRgba(upColor, 0.16),
+        bottomColor: 'rgba(255, 93, 93, 0.01)',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      ddBand.setData(dd.window);
+    }
+
+    // A股基准:金色细实线
     let bmLine = null;
     if (bmPoints.length) {
       bmLine = chart.addLineSeries({
@@ -133,21 +226,128 @@ export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel 
       bmLine.setData(bmPoints);
     }
 
+    // 标记:交易 B/S + 回撤峰值/谷底(时间升序;合并同日)
+    if (area) {
+      const markers = [...tradesMarkers];
+      if (dd.maxDd > 0.0005 && dd.peak && dd.trough) {
+        markers.push({
+          time: dd.peak.time,
+          position: 'aboveBar',
+          color: hexToRgba(upColor, 0.9),
+          shape: 'circle',
+          text: '峰',
+        });
+        markers.push({
+          time: dd.trough.time,
+          position: 'belowBar',
+          color: hexToRgba(upColor, 0.9),
+          shape: 'square',
+          text: `谷 -${(dd.maxDd * 100).toFixed(1)}%`,
+        });
+      }
+      if (markers.length) {
+        markers.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+        area.setMarkers(markers);
+      }
+    }
+
     chart.timeScale().fitContent();
 
-    // tooltip:十字线移动跟随;点的坐标取自 param.point,取值用 param.seriesData
-    // (不依赖 param.time 的具体形态做查值,仅用于展示日期)
+    // ---- 水下副图:回撤百分比(≤0),timeScale 双向联动 + 十字线同步 ----
+    let underChart = null;
+    let underArea = null;
+    if (underBody && underPoints.length) {
+      underChart = createChart(underBody, {
+        ...baseOptions,
+        width: underBody.clientWidth,
+        height: underBody.clientHeight,
+        rightPriceScale: { ...baseOptions.rightPriceScale, visible: false },
+        timeScale: { ...baseOptions.timeScale, visible: false }, // 时间轴由主图承担
+        localization: {
+          priceFormatter: (v) => `${(v * 100).toFixed(1)}%`,
+        },
+      });
+      underArea = underChart.addAreaSeries({
+        lineColor: hexToRgba(upColor, 0.85),
+        topColor: 'rgba(255, 93, 93, 0.02)',
+        bottomColor: hexToRgba(upColor, 0.28),
+        lineWidth: 1.4,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      underArea.setData(underPoints);
+      underChart.timeScale().fitContent();
+
+      // timeScale 双向联动(防回流:仅当范围差异明显才回写)
+      let syncing = false;
+      const syncFromMain = (range) => {
+        if (syncing || !range) return;
+        syncing = true;
+        try {
+          underChart.timeScale().setVisibleLogicalRange(range);
+        } finally {
+          syncing = false;
+        }
+      };
+      const syncFromUnder = (range) => {
+        if (syncing || !range) return;
+        syncing = true;
+        try {
+          chart.timeScale().setVisibleLogicalRange(range);
+        } finally {
+          syncing = false;
+        }
+      };
+      chart.timeScale().subscribeVisibleLogicalRangeChange(syncFromMain);
+      underChart.timeScale().subscribeVisibleLogicalRangeChange(syncFromUnder);
+      // 十字线同步:主图移动 → 副图跟随(副图 crosshair 不需要反向,只读展示)
+      chart.subscribeCrosshairMove((param) => {
+        if (!param || !param.time || !underArea) {
+          underChart.clearCrosshairPosition();
+          return;
+        }
+        const row = underPoints.find((p) => p.time === formatDate(param.time));
+        if (row) underChart.setCrosshairPosition(row.value, row.time, underArea);
+        else underChart.clearCrosshairPosition();
+      });
+    }
+
+    // ---- 固定 legend 信息条:默认最新值;crosshair 移动更新;移出恢复 ----
     const indexByTime = new Map(points.map((p, i) => [p.time, i]));
     const bmByTime = new Map(bmPoints.map((p) => [p.time, p.value]));
+    const underByTime = new Map(underPoints.map((p) => [p.time, p.value]));
+    const snapshotAt = (date) => {
+      const idx = indexByTime.get(date);
+      const strategy = idx != null ? points[idx].value : null;
+      const bench = bmByTime.get(date);
+      const u = underByTime.get(date);
+      return {
+        date,
+        strategy,
+        benchmark: bench,
+        bmLabel: benchmarkLabel,
+        dd: u != null ? -u : null,
+      };
+    };
+    const showSnapshot = (date) => renderLegendRow(legendRef.current, snapshotAt(date));
+    if (points.length) {
+      showSnapshot(points[points.length - 1].time);
+    } else if (bmPoints.length) {
+      showSnapshot(bmPoints[bmPoints.length - 1].time);
+    }
+
+    // ---- 浮动 tooltip:逐点详情(策略涨跌着色 + 基准 + 相对强弱) ----
     const hideTip = () => {
       tip.style.opacity = '0';
     };
     const onCrosshair = (param) => {
       if (!param.point || param.point.x < 0 || param.point.y < 0 || !param.time) {
         hideTip();
+        if (points.length) showSnapshot(points[points.length - 1].time);
         return;
       }
       const date = formatDate(param.time);
+      showSnapshot(date);
       const bar = param.seriesData && area ? param.seriesData.get(area) : null;
       const bmBar = param.seriesData && bmLine ? param.seriesData.get(bmLine) : null;
       const value = bar ? Number(bar.value) : NaN;
@@ -156,7 +356,6 @@ export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel 
         hideTip();
         return;
       }
-      // 较前一点涨红 / 跌绿(首点与 1.0 基线比较);基准无单点涨跌语义
       const idx = indexByTime.get(date) ?? 0;
       const prev = idx > 0 ? points[idx - 1].value : 1.0;
       const cls = value > prev ? 'tip-up' : value < prev ? 'tip-down' : '';
@@ -177,7 +376,6 @@ export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel 
         d3.className = 'tip-benchmark';
         d3.textContent = `${benchmarkLabel} ${Number(bmValue).toFixed(4)}`;
         tip.append(d3);
-        // 相对强弱:策略 - 基准(跑赢红 / 跑输绿,A 股语义)
         if (Number.isFinite(value)) {
           const d4 = document.createElement('div');
           const diff = value - Number(bmValue);
@@ -186,8 +384,14 @@ export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel 
           tip.append(d4);
         }
       }
+      const u = underByTime.get(date);
+      if (u != null && -u > 0.0005) {
+        const d5 = document.createElement('div');
+        d5.className = 'tip-value tip-dd';
+        d5.textContent = `回撤 -${(-u * 100).toFixed(2)}%`;
+        tip.append(d5);
+      }
 
-      // 位置跟随十字线,靠近右/上边缘时翻转,避免溢出容器
       const bw = body.clientWidth;
       const bh = body.clientHeight;
       const tw = tip.offsetWidth;
@@ -203,7 +407,7 @@ export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel 
     };
     chart.subscribeCrosshairMove(onCrosshair);
 
-    // 响应式:容器尺寸变化时同步图表宽高
+    // ---- 响应式:容器尺寸变化(含拖拽调高)时同步图表宽高 ----
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
@@ -213,15 +417,31 @@ export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel 
       }
     });
     ro.observe(body);
+    let roUnder = null;
+    if (underChart && underBody) {
+      roUnder = new ResizeObserver((entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          underChart.applyOptions({ width: Math.floor(width), height: Math.floor(height) });
+        }
+      });
+      roUnder.observe(underBody);
+    }
 
     return () => {
       ro.disconnect();
+      if (roUnder) roUnder.disconnect();
+      if (underChart) underChart.remove();
       chart.remove();
     };
-  }, [points, bmPoints, benchmarkLabel]);
+  }, [points, bmPoints, tradesMarkers, dd, underPoints, benchmarkLabel]);
 
   // 空数据 / null:不渲染任何东西
   if (!points.length && !bmPoints.length) return null;
+
+  const hasUnder = underPoints.length > 0;
 
   return (
     <section className="netvalue-chart" aria-label="策略净值与基准收益曲线">
@@ -231,7 +451,16 @@ export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel 
           {points.length > 0 && (
             <>
               <i className="legend-swatch" aria-hidden="true" />
-              策略净值(首日 = 1.0)
+              策略净值
+              {tradesMarkers.length > 0 && (
+                <>
+                  <i className="legend-trade-b" aria-hidden="true">B</i>
+                  <i className="legend-trade-s" aria-hidden="true">S</i>
+                </>
+              )}
+              {dd.maxDd > 0.0005 && (
+                <span className="legend-dd">最大回撤 -{(dd.maxDd * 100).toFixed(2)}%</span>
+              )}
             </>
           )}
           {bmPoints.length > 0 && (
@@ -242,9 +471,33 @@ export default function NetValueChart({ series, benchmarkSeries, benchmarkLabel 
           )}
         </span>
       </div>
-      <div className="netvalue-chart-body" ref={bodyRef}>
+      {/* 固定 legend 信息条(TradingView 式,十字线跟随更新) */}
+      <div className="netvalue-legend-row mono" ref={legendRef} />
+      <div className="netvalue-chart-body" ref={bodyRef} style={{ height: bodyHeight }}>
         <div className="netvalue-tooltip" ref={tipRef} />
       </div>
+      {hasUnder && (
+        <div className="netvalue-under" title="水下图:全程回撤百分比(与主图时间轴联动)">
+          <div className="netvalue-under-label mono">回撤(水下)</div>
+          <div className="netvalue-under-body" ref={underRef} />
+        </div>
+      )}
+      {/* 底部拖柄:上下拉伸主图高度,双击复位 */}
+      <div
+        className="chart-resize-handle"
+        role="separator"
+        aria-label="拖拽调整图表高度,双击复位"
+        title="拖拽调整高度(180~720),双击复位"
+        onPointerDown={(e) => {
+          e.preventDefault();
+          draggingRef.current = { startY: e.clientY, startH: bodyHeight };
+          document.body.classList.add('chart-resizing');
+        }}
+        onDoubleClick={() => {
+          setBodyHeight(HEIGHT_DEFAULT);
+          storeHeight(HEIGHT_DEFAULT);
+        }}
+      />
     </section>
   );
 }

@@ -9,6 +9,7 @@
 import { useState } from 'react';
 import MetricsCards from './MetricsCards.jsx';
 import FindingsList from './FindingsList.jsx';
+import ArenaCurveChart from './ArenaCurveChart.jsx';
 
 // 状态徽章元数据(与后端 details[name].status 对应)
 const STATUS_META = {
@@ -201,6 +202,13 @@ export default function ArenaResult({ result }) {
           <span>没有候选成功入榜:全部被校验拦截或执行失败,详见下方各候选状态。</span>
         </div>
       )}
+
+      {/* 净值曲线叠加:各候选同图对照 + 基准虚线(图例点选隐藏/显示) */}
+      <ArenaCurveChart
+        details={details}
+        benchmarkSeries={result.benchmark_series}
+        benchmarkLabel={result.benchmark ? `A股基准(${result.benchmark_label || result.benchmark})` : ''}
+      />
 
       {/* 文本排名表(可折叠) */}
       {showRaw && result.table ? (

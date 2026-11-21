@@ -22,6 +22,7 @@ from aquant.agents.llm import LLMClient, make_llm
 from aquant.agents.orchestrator import (
     _build_report,
     _extract_benchmark_series,
+    _extract_trades,
     _extract_execution_error,
     _extract_metrics,
     _extract_portfolio_series,
@@ -238,7 +239,7 @@ def run_edit_turn(
             return {
                 "ok": False, "rejected": True, "steps": steps, "code": None,
                 "analysis": "", "verdict": exc.verdict.to_dict(), "metrics": None,
-                "portfolio_series": None, "benchmark_series": None,
+                "portfolio_series": None, "benchmark_series": None, "trades": None,
                 "report": None, "error": str(exc),
             }
         code = outcome["code"]
@@ -265,6 +266,7 @@ def run_edit_turn(
             result_metrics = None
             series: list[dict[str, Any]] = []
             benchmark_series: list[dict[str, Any]] = []
+            trades_list: list[dict[str, Any]] = []
             break
 
         exec_kw: dict[str, Any] = {}
@@ -306,6 +308,7 @@ def run_edit_turn(
         result_metrics = _extract_metrics(result_obj, start, end)
         series = _extract_portfolio_series(result_obj)
         benchmark_series = _extract_benchmark_series(result_obj)
+        trades_list = _extract_trades(result_obj)
         steps.append({
             "step": "backtest", "skipped": False, "rejected": False,
             "summary": "回测执行完成,指标已汇总。",
@@ -327,6 +330,7 @@ def run_edit_turn(
         "metrics": result_metrics,
         "portfolio_series": series,
         "benchmark_series": benchmark_series,
+        "trades": trades_list,
         "report": report,
         "error": None,
     }

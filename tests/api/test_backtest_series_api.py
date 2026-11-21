@@ -26,11 +26,18 @@ def _ok_runner():
             # 与真实 runner 同语义:配置了基准才输出 benchmark_portfolio
             bm = pd.DataFrame({"unit_net_value": [1.0, 1.005, 0.998]}, index=idx) \
                 if kw.get("benchmark") else pd.DataFrame()
+            # 成交明细(rqalpha 6.5.0 DataFrame 形态):供前端图上买卖标记
+            trades = pd.DataFrame({
+                "datetime": ["2023-01-03 15:00:00", "2023-01-04 15:00:00"],
+                "side": ["BUY", "SELL"],
+                "last_price": [13.5, 14.2],
+                "last_quantity": [65300, 65300],
+            })
             return {
                 "summary": {"total_returns": 0.02, "benchmark_total_returns": -0.002},
                 "portfolio": portfolio,
                 "benchmark_portfolio": bm,
-                "trades": [],
+                "trades": trades,
                 "verdict": None,
                 "unsafe": False,
             }
@@ -113,6 +120,30 @@ def test_backtest_benchmark_explicit_and_none(client):
     assert d["benchmark_label"] == ""
     assert d["benchmark_series"] == []
     assert runner.last_kw.get("benchmark", None) is None
+
+
+def test_backtest_trades_detail_and_unknown_benchmark_400(client):
+    runner, tc = client
+    # 成交明细:序列化 {date, side, price, quantity}
+    resp = tc.post("/api/backtest", json={
+        "code": GOOD_CODE, "start": "2023-01-03", "end": "2023-01-05",
+    })
+    assert resp.status_code == 200
+    d = resp.json()
+    assert d["trades"] == [
+        {"date": "2023-01-03", "side": "BUY", "price": 13.5, "quantity": 65300.0},
+        {"date": "2023-01-04", "side": "SELL", "price": 14.2, "quantity": 65300.0},
+    ]
+
+    # 未知基准 oid → 400 可读中文(而不是让 rqalpha 报未知合约)
+    resp = tc.post("/api/backtest", json={
+        "code": GOOD_CODE, "start": "2023-01-03", "end": "2023-01-05",
+        "benchmark": "999999.XSHE",
+    })
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "不在当前数据 bundle 中" in body["detail"]
+    assert "000001.XSHG" in body["detail"]  # 指引里给出可用基准
 
 
 def test_backtest_without_benchmark_data_has_empty_series():

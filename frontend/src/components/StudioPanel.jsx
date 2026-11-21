@@ -19,10 +19,12 @@ import CodeEditor from './CodeEditor.jsx';
 import MetricsCards from './MetricsCards.jsx';
 import KlineChart from './KlineChart.jsx';
 import NetValueChart from './NetValueChart.jsx';
+import MonthlyReturnsTable from './MonthlyReturnsTable.jsx';
 import FindingsList from './FindingsList.jsx';
 import CodeBlock from './CodeBlock.jsx';
 import VerifyResult from './VerifyResult.jsx';
 import OptimizePanel from './OptimizePanel.jsx';
+import { STOCK_POOL } from '../guideContent.js';
 
 // localStorage 键:本地策略库(数组)/ 编辑草稿(纯文本)
 const LS_LIBRARY = 'aquant_studio_strategies';
@@ -31,18 +33,22 @@ const LS_DRAFT = 'aquant_studio_draft';
 // 默认初始资金:100 万
 const DEFAULT_CASH = '1000000';
 
-// A 股基准选项:value 与后端 /api/backtest 的 benchmark 参数同口径
-// ('none' = 不设基准;缺省 000001.XSHG = 上证指数,bundle 内为真实指数行情)
-const BENCHMARK_OPTIONS = [
-  { value: '000001.XSHG', label: '上证指数' },
+// A 股基准:自由输入(datalist 组合框)—— 指数快捷项 + 标的池全部合约 + 不设基准。
+// 后端 /api/backtest 对任意 bundle 内合约均支持作为基准(指数/个股/ETF 均可);
+// 'none' = 不设基准;空 = 平台默认(上证指数)。非法 oid 由前端预检拦截。
+const BENCHMARK_PRESETS = [
+  { value: '000001.XSHG', label: '上证指数(默认)' },
   { value: '000300.XSHG', label: '沪深300' },
   { value: 'none', label: '不设基准' },
 ];
 
-// value → 中文名(收益图图例用)
-function benchmarkLabelOf(value) {
-  const found = BENCHMARK_OPTIONS.find((o) => o.value === value);
-  return found ? found.label : value || '';
+// 基准输入归一化:'000001.XSHE' 等 oid / 'none' / 空 → 合法值;非法返回 undefined
+function normalizeBenchmark(raw) {
+  const v = String(raw ?? '').trim().toUpperCase();
+  if (!v) return undefined; // 留空 = 用平台默认
+  if (v === 'NONE' || v === '无' || v === '不设基准') return 'none';
+  if (/^\d{6}\.(XSHE|XSHG|BJ)$/.test(v)) return v;
+  return undefined;
 }
 
 // A 股 order_book_id 形态(与 ChatPanel 同口径):
@@ -141,7 +147,7 @@ export default function StudioPanel({ notify, studioSeed }) {
   const [start, setStart] = useState(DEFAULT_START);
   const [end, setEnd] = useState(DEFAULT_END);
   const [cash, setCash] = useState(DEFAULT_CASH);
-  const [benchmark, setBenchmark] = useState('000001.XSHG'); // A股基准(收益图对照线)
+  const [benchmark, setBenchmark] = useState('000001.XSHG'); // A股基准(自由输入,空=默认)
   const [advOpen, setAdvOpen] = useState(false); // 高级(保守参数)折叠区
   const [slippage, setSlippage] = useState(''); // 留空 = 平台默认 0.002
   const [volumePercent, setVolumePercent] = useState(''); // 留空 = 平台默认
@@ -333,8 +339,15 @@ export default function StudioPanel({ notify, studioSeed }) {
     setKlineCandles(null);
     setKlineError('');
 
+    const benchmarkNorm = normalizeBenchmark(benchmark);
+    if (benchmark.trim() !== '' && benchmarkNorm === undefined) {
+      setError('基准代码格式应为 6 位数字 + 交易所后缀(如 000300.XSHG,指数可选 000001.XSHG/000399.XSHE),或填 none 表示不设基准;留空用平台默认上证指数。');
+      return;
+    }
+
     const overrides = buildOverrides();
-    const payload = { code, start, end, cash: cashNum, benchmark };
+    const payload = { code, start, end, cash: cashNum };
+    if (benchmarkNorm !== undefined) payload.benchmark = benchmarkNorm;
     if (overrides) payload.overrides = overrides;
 
     // 1) 基础回测(必选)
@@ -638,19 +651,28 @@ export default function StudioPanel({ notify, studioSeed }) {
             </label>
             <label className="field">
               <span>A股基准</span>
-              <select
-                className="studio-select"
+              <input
+                className="studio-benchmark-input mono"
+                list="benchmark-oid-options"
                 value={benchmark}
                 disabled={busy}
                 onChange={(e) => setBenchmark(e.target.value)}
-                title="收益图将叠加基准净值曲线,便于对照策略相对大盘的表现"
-              >
-                {BENCHMARK_OPTIONS.map((o) => (
+                placeholder="000001.XSHG(默认上证指数)"
+                aria-label="A股基准"
+                title="任意 bundle 内合约均可作基准:上证指数 / 沪深300 / 标的池内任意个股或 ETF;填 none 不设基准,留空用默认"
+              />
+              <datalist id="benchmark-oid-options">
+                {BENCHMARK_PRESETS.map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label}
                   </option>
                 ))}
-              </select>
+                {STOCK_POOL.map((s) => (
+                  <option key={s.oid} value={s.oid}>
+                    {s.name}
+                  </option>
+                ))}
+              </datalist>
             </label>
           </div>
 
@@ -863,16 +885,18 @@ export default function StudioPanel({ notify, studioSeed }) {
               </span>
               <span className="verdict-counts mono">成交笔数 {btRes.data.trades_count ?? '—'}</span>
             </div>
-            {/* 收益图:策略净值 + A股基准对照线(未设基准/无数据时只画策略曲线) */}
+            {/* 收益图:策略净值 + A股基准对照线 + 回撤阴影带 + 交易标记(可拖高度) */}
             <NetValueChart
               series={btRes.data.portfolio_series}
               benchmarkSeries={btRes.data.benchmark_series}
               benchmarkLabel={
                 btRes.data.benchmark && btRes.data.benchmark !== 'none'
-                  ? `A股基准(${benchmarkLabelOf(btRes.data.benchmark)})`
+                  ? `A股基准(${btRes.data.benchmark_label || btRes.data.benchmark})`
                   : ''
               }
+              trades={btRes.data.trades}
             />
+            <MonthlyReturnsTable series={btRes.data.portfolio_series} />
             <MetricsCards metrics={btRes.data.metrics} />
             {btRes.data.verdict && (
               <>

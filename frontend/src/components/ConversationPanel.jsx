@@ -9,6 +9,7 @@ import CodeEditor from './CodeEditor.jsx';
 import MetricsCards, { formatValue } from './MetricsCards.jsx';
 import FindingsList from './FindingsList.jsx';
 import NetValueChart from './NetValueChart.jsx';
+import MonthlyReturnsTable from './MonthlyReturnsTable.jsx';
 import VersionTimeline from './VersionTimeline.jsx';
 import DiffView from './DiffView.jsx';
 
@@ -607,6 +608,7 @@ export default function ConversationPanel({ notify }) {
             disabled={!!viewVersion || busy === 'turn'}
             ariaLabel="多轮对话策略编辑器"
             placeholder="会话首轮由 Agent 生成策略,或先手动粘贴代码再新建会话。"
+            autoHeight={false}
           />
         </div>
         <div className="conv-edit-actions">
@@ -662,11 +664,21 @@ export default function ConversationPanel({ notify }) {
             <p>{lastResult.analysis}</p>
           </div>
         )}
-        {/* 收益图(策略净值 vs A股基准):优先展示本轮结果,否则展示当前版本存档序列 */}
+        {/* 收益图(策略净值 vs A股基准 + 回撤/交易标记):优先本轮结果,否则当前版本存档 */}
         <NetValueChart
           series={lastResult?.portfolio_series ?? currentVersion?.backtest?.portfolio_series}
           benchmarkSeries={lastResult?.benchmark_series ?? currentVersion?.backtest?.benchmark_series}
-          benchmarkLabel="A股基准(上证指数)"
+          benchmarkLabel={
+            lastResult?.benchmark && lastResult.benchmark !== 'none'
+              ? `A股基准(${lastResult.benchmark_label || lastResult.benchmark})`
+              : currentVersion?.backtest?.benchmark && currentVersion.backtest.benchmark !== 'none'
+                ? `A股基准(${currentVersion.backtest.benchmark_label || currentVersion.backtest.benchmark})`
+                : ''
+          }
+          trades={lastResult?.trades ?? currentVersion?.backtest?.trades}
+        />
+        <MonthlyReturnsTable
+          series={lastResult?.portfolio_series ?? currentVersion?.backtest?.portfolio_series}
         />
         <MetricsCards metrics={lastResult?.metrics || currentVersion?.metrics || null} />
         {lastResult?.verdict?.findings && (

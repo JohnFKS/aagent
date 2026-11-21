@@ -70,7 +70,11 @@ class TestArenaEndpoint:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert set(body) == {"ranking", "table", "details", "start", "end", "count", "ranked_count"}
+        assert set(body) == {
+            "ranking", "table", "details", "start", "end", "count", "ranked_count",
+            # 基准曲线与图例名(None 请求时 benchmark=None、序列为空列表)
+            "benchmark", "benchmark_series", "benchmark_label",
+        }
         assert body["count"] == 2
         assert body["ranked_count"] == 2
         assert body["start"] == START and body["end"] == END

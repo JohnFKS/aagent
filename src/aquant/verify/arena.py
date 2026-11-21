@@ -74,6 +74,7 @@ def run_arena(
     bundle_path: str | Path | None = None,
     *,
     cash: float | None = None,
+    benchmark: str | None = None,
     runner: ArenaRunner | None = None,
 ) -> dict[str, Any]:
     """多策略候选并行回测 + 指标对比排名("多 Agent 养蛊式"竞技场)。
@@ -93,8 +94,12 @@ def run_arena(
         default_bundle_path(),此参数不透传给 runner)
     :param cash: 初始资金(校验配置与 runner=None 路径的回测共用;runner 路径
         仅在显式提供时透传)
+    :param benchmark: 基准指数/合约 oid(None 时所有候选不设基准);设置后
+        响应附带全场合用的 benchmark_series(基准净值曲线,供前端叠加对照)
     :returns: {"ranking": 排名列表, "table": 文本排名表, "details": 每候选
-        {"status": "rejected"/"failed"/"ranked", "verdict"?/"error"?/"metrics"?},
+        {"status": "rejected"/"failed"/"ranked", "verdict"?/"error"?/"metrics"?/
+         "portfolio_series"?},
+        "benchmark"?, "benchmark_series"?,
         "start", "end", "count", "ranked_count"}
     """
     if not candidates:
@@ -104,9 +109,10 @@ def run_arena(
     if duplicates:
         raise ValueError(f"候选名重复:{', '.join(duplicates)}(同场竞技的候选名必须唯一)")
 
-    run_config = build_run_config(start, end, cash=cash)
+    run_config = build_run_config(start, end, cash=cash, benchmark=benchmark)
     details: dict[str, dict[str, Any]] = {}
     summaries: dict[str, dict[str, Any]] = {}
+    results: dict[str, Any] = {}
     to_run: list[tuple[str, str]] = []
 
     # ---- 阶段 1:校验门禁(串行,便宜;被拒者绝不进入回测)------------------
@@ -124,12 +130,15 @@ def run_arena(
             kw: dict[str, Any] = {}
             if cash is not None:
                 kw["cash"] = cash
+            if benchmark:
+                kw["benchmark"] = benchmark
             # bundle 由 runner 自行处理(RealRunnerAdapter 内部走默认路径),
             # 因此不向 runner 透传 bundle_path
             return runner.run(code, start, end, **kw)
         from aquant.runner.backtest import run_backtest  # 延迟导入,保持层间解耦
 
-        return run_backtest(code, start, end, bundle_path=bundle_path, cash=cash)
+        return run_backtest(code, start, end, bundle_path=bundle_path, cash=cash,
+                            benchmark=benchmark)
 
     if to_run:
         with concurrent.futures.ThreadPoolExecutor(
@@ -157,20 +166,40 @@ def run_arena(
                     details[name] = {"status": "failed", "error": "回测未返回有效指标,不参与排名"}
                     continue
                 summaries[name] = summary
+                results[name] = result
                 details[name] = {
                     "status": "ranked",
                     "metrics": summary,
                     "verdict": _verdict_to_dict(verdict),
+                    "portfolio_series": _extract_series(result),
                 }
 
     # ---- 阶段 3:排名与渲染(复用 verify/metrics)--------------------------
     ranked = rank_candidates(summaries)
+    # 基准净值曲线全场同一份(任一成功候选的结果里都带,取第一个即可)
+    benchmark_series = _extract_benchmark(next(iter(results.values()))) if results else []
     return {
         "ranking": ranked,
         "table": render_ranking(ranked),
         "details": details,
+        "benchmark": benchmark,
+        "benchmark_series": benchmark_series,
         "start": start,
         "end": end,
         "count": len(candidates),
         "ranked_count": len(ranked),
     }
+
+
+def _extract_series(result: Any, max_points: int = 400) -> list[dict[str, Any]]:
+    """候选净值序列提取(复用 agents.orchestrator 的实现,延迟导入避免层间环)。"""
+    from aquant.agents.orchestrator import _extract_portfolio_series
+
+    return _extract_portfolio_series(result, max_points)
+
+
+def _extract_benchmark(result: Any, max_points: int = 400) -> list[dict[str, Any]]:
+    """基准净值序列提取(同上,复用 orchestrator;无基准/异常返回空列表)。"""
+    from aquant.agents.orchestrator import _extract_benchmark_series
+
+    return _extract_benchmark_series(result, max_points)

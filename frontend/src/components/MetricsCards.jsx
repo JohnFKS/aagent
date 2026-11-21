@@ -16,13 +16,14 @@ const PERCENT_KEYS = new Set([
   'win_rate',
 ]);
 
-// 核心指标卡(需求指定的 7 项,缺失也占位显示)
+// 核心指标卡(缺失也占位显示 "—";基准收益进核心卡,避免有/无基准时网格整体跳动)
 const CORE_CARDS = [
   { key: 'total_returns', label: '总收益', kind: 'percent', signed: true },
   { key: 'annualized_returns', label: '年化收益', kind: 'percent', signed: true },
-  { key: 'sharpe', label: '夏普比率', kind: 'num2' },
   // 实测后端 max_drawdown 为正数幅度(如 0.3795 → 37.95%),非收益,不着正红
   { key: 'max_drawdown', label: '最大回撤', kind: 'percent', signed: false },
+  { key: 'benchmark_total_returns', label: '基准收益', kind: 'percent', signed: true },
+  { key: 'sharpe', label: '夏普比率', kind: 'num2' },
   { key: 'total_commission', label: '总佣金', kind: 'cny' },
   { key: 'total_tax', label: '印花税', kind: 'cny' },
   { key: 'trading_days', label: '交易日', kind: 'int' },
@@ -30,7 +31,6 @@ const CORE_CARDS = [
 
 // 扩展指标卡:仅在后端返回了对应键时才展示
 const EXTRA_CARDS = [
-  { key: 'benchmark_total_returns', label: '基准收益', kind: 'percent', signed: true },
   { key: 'volatility', label: '波动率', kind: 'percent' },
   { key: 'alpha', label: 'Alpha', kind: 'percent', signed: true },
   { key: 'beta', label: 'Beta', kind: 'num2' },

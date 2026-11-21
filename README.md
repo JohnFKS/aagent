@@ -402,10 +402,17 @@ scripts/add_benchmark_index.sh ~/.aquant/bundle-baostock 000001.XSHG,000300.XSHG
 # 幂等可重复执行;来源与行数写入 bundle/benchmark_meta.json(响应如实标注数据出处)
 ```
 
-- 平台默认基准 = 上证指数(000001.XSHG);工坊可切换沪深300 或关闭基准;
-- 未注入真实指数的 bundle 中该 oid 为成分股等权合成基准(仅形态对照,响应如实标注);
-- API 侧:`/api/backtest` 与 `/api/chat` 返回 `portfolio_series` + `benchmark_series`
-  (`[{date, net_value}]`,等距抽样 ≤400 点)。
+- **基准可自指定**:工坊基准框自由输入任意 bundle 内合约(上证指数 / 沪深300 /
+  池内个股 / ETF,`none` 关闭;会话级基准随会话保存);未知 oid 直接给可读 400;
+- 未注入真实指数的 bundle 中 000001.XSHG 为成分股等权合成基准(仅形态对照);
+- API 侧:`/api/backtest` 与 `/api/chat` 返回 `portfolio_series` + `benchmark_series` +
+  `trades` 明细(`[{date, side, price, quantity}]`);
+- **收益图增强**(对标聚宽/米筐/TradingView):最大回撤区间阴影带(峰值→谷底,含
+  −x.x% 谷底标记)、交易 B/S 箭头标记(买红下/卖绿上,同日合并 ×N)、固定 legend
+  信息条(十字线跟随更新策略/基准/回撤/相对强弱)、**回撤水下副图**(与主图时间轴
+  双向联动)、**底部拖柄自由调高**(180~720px,localStorage 记忆,双击复位)、
+  **月度收益热力表**(相邻月末环比,红涨绿跌)、竞技场**多候选净值曲线叠加**
+  (图例点选隐藏,基准灰虚线对照)。
 
 ---
 
