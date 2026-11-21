@@ -265,12 +265,17 @@ def build_bundle(
     sources: list,
     out_dir: str | Path,
     benchmark_oid: str | None = None,
+    *,
+    fill_missing_factors: bool = False,
 ) -> Path:
     """从 BarSource 构建可直接被 rqalpha 6.5.0 BaseDataSource 加载的数据 bundle。
 
     :param sources: 实现 BarSource 协议的数据源(可多个,同 oid 先到先得)
     :param out_dir: 输出目录(不存在则创建)
     :param benchmark_oid: 基准指数 oid;None 或无真实数据时合成 '000001.XSHG' 等权基准
+    :param fill_missing_factors: 复权因子缺失日按上一有效因子前向填充(自动扩展拉取
+        最新行情时启用:数据源因子表按分红事件发布,近期事件可能尚未落库);
+        默认 False = 主构建口径,缺失即拒绝(Layer 2 质量闸门)
     :returns: bundle 目录 Path
     """
     out = Path(out_dir)
@@ -354,7 +359,9 @@ def build_bundle(
             split_arrays[oid] = arr
         df = data["daily"][oid]
         if not df.empty:
-            ex_arrays[oid] = ex_cum_factor_from(df, data["factor"][oid])
+            ex_arrays[oid] = ex_cum_factor_from(
+                df, data["factor"][oid], fill_missing=fill_missing_factors
+            )
     _write_factor_datasets(out / "dividends.h5", div_arrays)
     _write_factor_datasets(out / "split_factor.h5", split_arrays)
     _write_factor_datasets(out / "ex_cum_factor.h5", ex_arrays)

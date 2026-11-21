@@ -103,8 +103,10 @@ export const api = {
   chat: (payload) => request('/api/chat', { method: 'POST', body: payload, timeout: 420000 }),
   // POST /api/validate {code,start?,end?} → Layer 1 校验结论 + 中文摘要
   validate: (payload) => request('/api/validate', { method: 'POST', body: payload }),
-  // POST /api/backtest {code,start,end,cash?,overrides?} → 200 指标 / 422 拦截(verdict)
-  backtest: (payload) => request('/api/backtest', { method: 'POST', body: payload }),
+  // POST /api/backtest {code,start,end,cash?,benchmark?,overrides?} →
+  // 200 指标+收益图序列 / 422 拦截(verdict)。区间超出 bundle 时后端会自动
+  // 拉取最新行情重建数据(首次触发约 30~90s),超时放宽到 300s。
+  backtest: (payload) => request('/api/backtest', { method: 'POST', body: payload, timeout: 300000 }),
   // POST /api/verify {code,start,end,is_ratio?,cash?,benchmark?,overrides?} →
   // 分层验证(Layer 4,样本内/样本外对照 + checks + 随机基准 + 模拟盘清单)。
   // 内部要跑两次回测(约 5~20 秒),超时放宽到 300s。

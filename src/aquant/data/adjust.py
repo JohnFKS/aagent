@@ -52,17 +52,26 @@ def _factor_change_points(factor: pd.Series, min_jump: float = 0.002) -> list[in
     return events[1:]
 
 
-def ex_cum_factor_from(raw_df: pd.DataFrame, factor_series: pd.Series) -> np.ndarray:
+def ex_cum_factor_from(
+    raw_df: pd.DataFrame,
+    factor_series: pd.Series,
+    *,
+    fill_missing: bool = False,
+) -> np.ndarray:
     """由真实价日线与逐日累计复权因子,生成 rqalpha ex_cum_factor 分段表。
 
     :param raw_df: 该合约真实价日线(升序,DatetimeIndex);仅用于确定日期范围,
         日期与 factor_series 对齐(以 raw_df 索引为准)。
     :param factor_series: 累计 hfq 因子(hfq = raw × factor),DatetimeIndex 升序、float64。
+    :param fill_missing: 因子缺失日的处理。False(默认,主构建口径)= 缺失即拒绝
+        (Layer 2 数据质量闸门);True = 按上一有效因子前向填充(末段缺失沿用最后
+        已知因子,即"期间无除权事件"假设,用于**自动扩展**拉取最新行情的场景——
+        数据源的因子表通常按分红事件发布,近期事件可能尚未落库)。
     :returns: 结构化数组,字段 start_date(int64,14 位 YYYYMMDD000000)+ ex_cum_factor(float64)。
         首条记录 = (数据首日, 因子首值);其后每条 = (因子事件日, 事件后因子)。
 
     异常:若因子相对运行最大值**下降超过 1%**(真实口径错误,如混用前/后复权),
-    直接拒绝——这是 Layer 2 的数据质量闸门。
+    直接拒绝——这是 Layer 2 的数据质量闸门(fill_missing 模式同样生效)。
     """
     if raw_df.empty:
         return np.empty(0, dtype=EX_CUM_FACTOR_DTYPE)
@@ -70,10 +79,19 @@ def ex_cum_factor_from(raw_df: pd.DataFrame, factor_series: pd.Series) -> np.nda
     # 因子序列按 raw_df 的索引对齐(容许 factor 索引为 raw 索引的子集/超集)
     factor = factor_series.reindex(raw_df.index)
     if factor.isna().any():
-        missing = factor[factor.isna()].index[:3].tolist()
-        raise ValueError(
-            f"factor_series 与 raw_df 日期未对齐,缺失 {len(factor[factor.isna()])} 天(如 {missing})"
-        )
+        if not fill_missing:
+            missing = factor[factor.isna()].index[:3].tolist()
+            raise ValueError(
+                f"factor_series 与 raw_df 日期未对齐,缺失 {len(factor[factor.isna()])} 天(如 {missing})"
+            )
+        n_missing = int(factor.isna().sum())
+        factor = factor.ffill().bfill()
+        if factor.isna().any():
+            raise ValueError("factor_series 为空,无法前向填充复权因子")
+
+    values = factor.to_numpy(dtype=np.float64)
+    if len(values) > 0 and values[0] <= 0:
+        raise ValueError(f"复权因子必须为正数,首值 {values[0]!r}")
 
     values = factor.to_numpy(dtype=np.float64)
     if len(values) > 0 and values[0] <= 0:

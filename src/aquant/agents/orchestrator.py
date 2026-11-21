@@ -197,6 +197,7 @@ def run_conversation(
         "portfolio_series": portfolio_series,
         "benchmark_series": benchmark_series,
         "trades": trades_list,
+        "bundle_extension": _extract_bundle_extension(result_obj),
         "review": merged,
         "report": report,
         "error": None,
@@ -376,6 +377,13 @@ def _extract_trades(result: Any, max_trades: int = 300) -> list[dict[str, Any]]:
         return rows[:max_trades]
     except Exception:
         return []
+
+
+def _extract_bundle_extension(result: Any) -> dict[str, Any] | None:
+    """提取 bundle 自动扩展信息(RealRunnerAdapter 挂 ensure_coverage 后写入)。"""
+    ext = result.get("bundle_extension") if isinstance(result, dict) \
+        else getattr(result, "bundle_extension", None)
+    return ext if isinstance(ext, dict) else None
 
 
 def _to_jsonable(value: Any) -> Any:

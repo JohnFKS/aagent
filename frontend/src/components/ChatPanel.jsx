@@ -76,6 +76,13 @@ export default function ChatPanel({ notify, onSeedValidate, onSeedStudio }) {
     try {
       const data = await api.chat({ text: text.trim(), start, end });
       setResult(data || {});
+    if (data?.bundle_extension?.extended) {
+        const ext = data.bundle_extension;
+        notify(
+          'info',
+          `数据 bundle 已自动更新:${ext.prior.end} → ${ext.now.end}(拉取最新行情,旧数据已清理)。`,
+        );
+      }
       // 业务语义:ok=false 表示管线被拦截或生成失败(仍是 HTTP 200)
       if (data && data.ok === false) {
         notify('warn', data.error || '管线未完整执行:被校验拦截或生成失败。');

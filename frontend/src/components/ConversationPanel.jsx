@@ -272,6 +272,13 @@ export default function ConversationPanel({ notify }) {
       setSession(data.session);
       setLastResult(data);
       notify('success', `回测完成:${metricsLine(data.metrics)}`);
+    if (data?.bundle_extension?.extended) {
+      const ext = data.bundle_extension;
+      notify(
+        'info',
+        `数据 bundle 已自动更新:${ext.prior.end} → ${ext.now.end}(拉取最新行情,旧数据已清理)。`,
+      );
+    }
     } catch (e) {
       setError(e.message);
       notify('error', e.message);

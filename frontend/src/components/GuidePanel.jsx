@@ -264,9 +264,10 @@ export default function GuidePanel({ notify, onSeedStudio }) {
           ))}
         </div>
         <div className="guide-note">
-          数据区间 <span className="mono">2022-01-04 ~ 2024-12-31</span>;均线类策略的预热期会自动用到
-          回测起始日之前的 bundle 数据(history_bars 可取到),无需为此把起始日提前。
-          想扩充标的池:重建 bundle(<span className="mono">python -m aquant.data.build_bundle --codes …</span>)。
+          数据区间以当前 bundle 为准(默认构建覆盖 2022-01-04 起);**回测区间超出数据范围时,
+          平台会自动拉取最新行情扩展 bundle**(旧数据与长期未使用的缓存自动清理),首次触发约需
+          30~90 秒。均线类策略的预热期会自动用到回测起始日之前的 bundle 数据(history_bars
+          可取到)。想扩充标的池:重建 bundle(<span className="mono">python -m aquant.data.build_bundle --codes …</span>)。
         </div>
       </section>
 

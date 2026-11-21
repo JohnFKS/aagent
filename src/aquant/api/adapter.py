@@ -30,10 +30,27 @@ class RealRunnerAdapter:
     name = "real_runner"
 
     def run(self, code: str, start: str, end: str, **kw: Any) -> Any:
-        """延迟导入并执行真实回测(bundle 缺失时由 run_backtest 抛 FileNotFoundError)。"""
+        """延迟导入并执行真实回测(bundle 缺失时由 run_backtest 抛 FileNotFoundError)。
+
+        回测前先做区间覆盖检查:请求区间超出 bundle 日历时自动拉取最新行情
+        (data.extend.ensure_coverage,重建 bundle 并删除旧目录),失败降级为
+        原语义错误;扩展信息随结果以 bundle_extension 键透出供前端提示。
+        """
         from aquant.runner.backtest import BacktestExecutionError, key_metrics, run_backtest  # 延迟导入,保持解耦
 
         bundle_path = kw.pop("bundle_path", None) or default_bundle_path()
+        extension = None
+        try:
+            from aquant.data.extend import ensure_coverage
+
+            extension = ensure_coverage(bundle_path, start, end)
+        except TimeoutError:
+            pass  # 并发锁等待超时:放弃本次扩展,按原区间语义执行
+        except Exception as exc:  # noqa: BLE001 覆盖检查异常不阻塞回测主链路
+            import warnings
+
+            warnings.warn(f"bundle 区间覆盖检查失败(已忽略):{exc}", stacklevel=2)
+
         try:
             result = run_backtest(code, start, end, bundle_path=bundle_path, **kw)
         except BacktestExecutionError as exc:
@@ -45,6 +62,7 @@ class RealRunnerAdapter:
                 "verdict": None,
                 "unsafe": False,
                 "execution_error": str(exc),
+                "bundle_extension": extension,
             }
         return {
             "summary": key_metrics(result),
@@ -53,4 +71,5 @@ class RealRunnerAdapter:
             "trades": result.trades,
             "verdict": result.verdict,
             "unsafe": result.unsafe,
+            "bundle_extension": extension,
         }

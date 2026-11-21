@@ -360,6 +360,13 @@ export default function StudioPanel({ notify, studioSeed }) {
         'success',
         `基础回测完成${data?.trades_count != null ? `,成交 ${data.trades_count} 笔` : ''}。`,
       );
+    if (data?.bundle_extension?.extended) {
+      const ext = data.bundle_extension;
+      notify(
+        'info',
+        `数据 bundle 已自动更新:${ext.prior.end} → ${ext.now.end}(拉取最新行情,旧数据已清理)。`,
+      );
+    }
     } catch (e) {
       if (e.data && e.data.verdict) {
         // 422:运行时校验拦截,错误体带 verdict → 拦截条 + findings

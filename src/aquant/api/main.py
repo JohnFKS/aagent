@@ -336,6 +336,7 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
         "portfolio_series": _extract_portfolio_series(result),
         "benchmark_series": _extract_benchmark_series(result),
         "trades": _extract_trades(result),
+        "bundle_extension": result.get("bundle_extension") if isinstance(result, dict) else None,
         "benchmark": benchmark,
         "benchmark_label": _benchmark_label_of(benchmark),
     }
@@ -791,6 +792,8 @@ def _backtest_version(
         "portfolio_series": series,
         "benchmark_series": benchmark_series,
         "trades": _extract_trades(outcome["result"]),
+        "bundle_extension": outcome["result"].get("bundle_extension")
+        if isinstance(outcome["result"], dict) else None,
         "benchmark": benchmark,
         "benchmark_label": _benchmark_label_of(benchmark),
         "verdict": verdict.to_dict(),
