@@ -10,7 +10,7 @@
 
 :py:data:`CONTRACT_MARKDOWN` —— 代码契约 + 标的池说明 + 参考骨架;
 :py:data:`WORKFLOW_MARKDOWN` —— 七步自主工作流(校验-回测-诊断-迭代-汇报);
-:py:func:`stock_pool_text` —— 当前 bundle 的标的池(动态读取,含真实指数)。
+:py:func:`stock_pool_text` —— 当前 bundle 的数据池(动态读取,含真实指数)。
 """
 
 from __future__ import annotations
@@ -37,8 +37,10 @@ CONTRACT_MARKDOWN = """\
    - 外部数据:requests / httpx / urllib / socket / open() / pd.read_* 等一切 IO;
    - 模块顶层调用机器学习训练(如 `.fit()`);
    - 出现或修改回测配置(滑点/手续费/T+1/涨跌停由平台强制注入,更激进值会被拒绝)。
-5. 标的只能用当前 bundle 内的合约(用 `platform_list_instruments` 查询,结果里
-   会给出标的池与当前数据区间);选其它标的无法回测。
+5. 标的为**任意当前正常上市交易的 A 股股票或 ETF**(6 位代码 + 交易所后缀,
+   如 600519.XSHG/000001.XSHE/300750.XSHE);bundle 未包含的标的**首次使用会自动
+   在线获取**(约 30~90 秒),已退市/长期停牌的标的会返回可读错误;
+   `platform_list_instruments` 可查当前数据池与数据区间。
 6. 只允许这些 import:`import numpy as np`、`import pandas as pd`、
    `from rqalpha.const import POSITION_DIRECTION`。
 7. 输出:完整可运行的单文件策略代码,不要解释性文字、测试代码或调用示例。
@@ -67,8 +69,8 @@ def handle_bar(context, bar_dict):
 
 ## 提示
 - 均线预热不占回测区间:`history_bars` 可取到回测起始日之前的 bundle 数据;
-- 回测默认强制 0.2% 滑点、万八佣金 + 千一印花税、T+1、涨跌停与成交量限制,
-  指标是贴近实盘的保守口径;不要在代码里试图绕过;
+- 回测默认强制 0.2% 滑点、万八佣金 + 印花税(PIT:2023-08-28 前千一/后万五)、
+  T+1、涨跌停与成交量限制,指标是贴近实盘的保守口径;不要在代码里试图绕过;
 - 422 返回的 findings 会逐条说明违规规则与行号,按条修正即可。
 """
 
@@ -101,12 +103,13 @@ WORKFLOW_MARKDOWN = """\
 """
 
 _DEFAULT_POOL_TEXT = """\
-标的池以 `platform_list_instruments` 实时返回为准(平台默认 bundle 内含
-上证指数、沪深300 与多只流动性个股;数据区间见同一条返回)。"""
+数据池以 `platform_list_instruments` 实时返回为准:任意正常上市交易的 A 股股票/ETF
+均可回测,未在池中的标的首次使用自动在线获取(约 30~90 秒);基准指数
+(上证指数/沪深300 等)同口径。长期未使用的标的数据自动清理。"""
 
 
 def stock_pool_text() -> str:
-    """标的池文本(动态读 bundle;缺失时给通用说明)。"""
+    """数据池文本(动态读 bundle;缺失时给通用说明)。"""
     try:
         from aquant.config.schema import default_bundle_path
         from aquant.data.extend import bundle_calendar
@@ -128,7 +131,10 @@ def stock_pool_text() -> str:
                 indexes.append(entry)
             else:
                 others.append(f"{entry}[{t}]")
-        lines.append(f"标的池({len(stocks)} 只个股):{'、'.join(stocks)}")
+        lines.append(
+            f"当前数据池({len(stocks)} 只个股,任意正常上市标的首次使用自动在线获取):"
+            + "、".join(stocks)
+        )
         if indexes:
             lines.append(f"基准指数:{'、'.join(indexes)}")
         if others:

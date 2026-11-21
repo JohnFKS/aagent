@@ -138,17 +138,7 @@ def _h_backtest(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         benchmark = "000001.XSHG"  # 与 REST 端点 _resolve_benchmark 的默认一致
     elif str(benchmark).strip().lower() in ("", "none"):
         benchmark = None if str(benchmark).strip().lower() == "none" else benchmark
-    if benchmark and str(benchmark).strip().lower() != "none":
-        from aquant.data.instruments import benchmark_exists
-        if not benchmark_exists(str(benchmark), default_bundle_path()):
-            return 400, {
-                "detail": (
-                    f"基准合约 {benchmark} 不在当前数据 bundle 中,无法作为基准。"
-                    "请改用上证指数(000001.XSHG)、沪深300(000300.XSHG)或 bundle 内任意标的。"
-                ),
-            }
-    elif benchmark is not None:
-        benchmark = None
+    # 基准/标的白名单校验由 adapter 标自适应接管(bundle 缺失时自动在线获取)
 
     run_config = build_run_config(start, end, cash=body.get("cash"), benchmark=benchmark,
                                   user_mod_overrides=body.get("overrides"))

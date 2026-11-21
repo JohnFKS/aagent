@@ -156,3 +156,55 @@ class TestAdapterExecutionError:
 class TestExtractPythonBlockRegression:
     def test_extract_still_works(self):
         assert "def init" in extract_python_block(_fenced(GOOD_CODE))
+
+
+class TestAdapterInstrumentUnavailable:
+    def test_unavailable_instrument_readable_failure(self, monkeypatch):
+        """标的不可提供(退市/无行情)→ execution_error 携带可读原因,不进回测。"""
+        import aquant.data.extend as ext
+        from aquant.api.adapter import RealRunnerAdapter
+
+        def _fail(bundle, start, end, **kw):
+            raise ext.InstrumentUnavailableError(
+                "标的 999999.XSHE 无法提供行情数据,无法回测:Baostock 区间无日线数据。"
+                "请确认代码正确且当前正常上市(已退市/长期停牌的标的无法回测)。"
+            )
+
+        monkeypatch.setattr(ext, "ensure_coverage", _fail)
+        out = RealRunnerAdapter().run("code", "2023-01-03", "2024-06-28")
+        assert out["summary"] is None
+        assert "无法提供行情数据" in out["execution_error"]
+        assert "正常上市" in out["execution_error"]
+        assert out["daily_holdings"] == []
+
+    def test_strategy_oids_extracted_and_passed(self, monkeypatch):
+        """adapter 从策略代码提取 oid 传入 ensure_coverage(标自适应入参)。"""
+        import aquant.data.extend as ext
+        from aquant.api.adapter import RealRunnerAdapter
+
+        seen = {}
+
+        def _fake_coverage(bundle, start, end, **kw):
+            seen["oids"] = kw.get("extra_oids")
+            return None
+
+        monkeypatch.setattr(ext, "ensure_coverage", _fake_coverage)
+
+        import pandas as pd
+        import aquant.runner.backtest as rb
+
+        def _fake_run(*a, **kw):
+            return type("R", (), {
+                "summary": {"total_returns": 0.0},
+                "start": "2023-01-03", "end": "2023-02-01",
+                "elapsed_seconds": 0.0, "unsafe": False,
+                "portfolio": pd.DataFrame({"x": [1]}),
+                "trades": [], "verdict": None, "unsafe": False,
+                "benchmark_portfolio": pd.DataFrame(), "run_log": [],
+                "strategy_prints": [], "daily_holdings": [],
+            })()
+
+        monkeypatch.setattr(rb, "run_backtest", _fake_run)
+        code = 'context.s1 = "600519.XSHG"  # 另一个 000905.XSHG 作为基准'
+        RealRunnerAdapter().run(code, "2023-01-03", "2023-02-01", benchmark="000300.XSHG")
+        assert {"600519.XSHG", "000905.XSHG", "000300.XSHG"} <= seen["oids"]

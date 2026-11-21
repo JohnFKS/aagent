@@ -252,7 +252,7 @@ export default function GuidePanel({ notify, onSeedStudio }) {
       {/* ---- 5. 标的池 ---- */}
       <section className="panel">
         <div className="panel-head">
-          <h2>④ 标的池(平台默认数据 bundle 内可回测)</h2>
+          <h2>④ 推荐标的(任意正常上市标的均可回测)</h2>
         </div>
         <div className="guide-pool">
           {STOCK_POOL.map((s) => (
@@ -264,10 +264,11 @@ export default function GuidePanel({ notify, onSeedStudio }) {
           ))}
         </div>
         <div className="guide-note">
-          数据区间以当前 bundle 为准(默认构建覆盖 2022-01-04 起);**回测区间超出数据范围时,
-          平台会自动拉取最新行情扩展 bundle**(旧数据与长期未使用的缓存自动清理),首次触发约需
-          30~90 秒。均线类策略的预热期会自动用到回测起始日之前的 bundle 数据(history_bars
-          可取到)。想扩充标的池:重建 bundle(<span className="mono">python -m aquant.data.build_bundle --codes …</span>)。
+          <strong>不限于上表</strong>:任意正常上市交易的 A 股股票/ETF 均可回测 —— 代码里使用
+          bundle 外的标的时,平台会**自动在线获取行情并加入数据池**(首次约 30~90 秒);
+          已退市/长期停牌的标的会返回可读错误;**长期未使用的标的数据自动清理**。
+          数据区间以当前数据池为准(回测超出范围自动拉取最新行情);均线预热会自动用到
+          回测起始日之前的数据(history_bars 可取到)。
         </div>
       </section>
 

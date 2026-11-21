@@ -131,7 +131,7 @@ def test_backtest_benchmark_explicit_and_none(client):
     assert runner.last_kw.get("benchmark", None) is None
 
 
-def test_backtest_trades_detail_and_unknown_benchmark_400(client):
+def test_backtest_trades_detail_and_benchmark_passthrough(client):
     runner, tc = client
     # 成交明细:序列化 {date, side, price, quantity}
     resp = tc.post("/api/backtest", json={
@@ -155,15 +155,15 @@ def test_backtest_trades_detail_and_unknown_benchmark_400(client):
         "daily_pnl": -100.0, "daily_returns": -0.0001, "total_returns": 0.0,
     }]
 
-    # 未知基准 oid → 400 可读中文(而不是让 rqalpha 报未知合约)
+    # 未知基准 oid:白名单已解除 —— 透传给 runner,由标自适应在线获取
+    # (真实不可用的标的在 adapter 层返回 execution_error,见 adapter 单测)
     resp = tc.post("/api/backtest", json={
         "code": GOOD_CODE, "start": "2023-01-03", "end": "2023-01-05",
         "benchmark": "999999.XSHE",
     })
-    assert resp.status_code == 400
-    body = resp.json()
-    assert "不在当前数据 bundle 中" in body["detail"]
-    assert "000001.XSHG" in body["detail"]  # 指引里给出可用基准
+    assert resp.status_code == 200
+    assert resp.json()["benchmark"] == "999999.XSHE"
+    assert runner.last_kw.get("benchmark") == "999999.XSHE"
 
 
 def test_backtest_without_benchmark_data_has_empty_series():

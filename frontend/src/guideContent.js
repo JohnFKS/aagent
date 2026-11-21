@@ -9,9 +9,10 @@
 // 标的池必须与平台默认数据 bundle(~/.aquant/bundle-baostock,scripts/add_benchmark_index.sh
 // 注入真实上证指数/沪深300)保持一致 —— 池外标的无法回测。
 
-// 平台默认标的池(10 只,覆盖主板/创业板,波动特征互补)
+// 推荐标的(流动性好的 10 只,覆盖主板/创业板;非白名单 —— 任意正常上市标的
+// 均可回测,未在数据池中的标的首次使用自动在线获取)
 export const STOCK_POOL = [
-  { oid: '000001.XSHE', name: '平安银行', note: '主板' },
+  { oid: '000001.XSHE', name: '平安银行', note: '主板·推荐' },
   { oid: '600519.XSHG', name: '贵州茅台', note: '主板·高价股' },
   { oid: '600036.XSHG', name: '招商银行', note: '主板' },
   { oid: '000333.XSHE', name: '美的集团', note: '主板' },
@@ -61,8 +62,7 @@ export const PROMPT_FULL = `你是一名精通 RQAlpha 6.5.0 的 A 股量化策�
    c. 读取外部数据:requests、httpx、urllib、socket、open()、pd.read_csv/read_excel/read_sql 等任何文件与网络 IO;
    d. 在模块顶层调用机器学习训练(如 .fit());
    e. 出现或修改回测配置(滑点、手续费、T+1、涨跌停撮合等由平台强制注入,策略代码里不要写这些)。
-5. 标的只能从下面的标的池中选(平台数据 bundle 只包含这些标的,选其它标的无法回测):
-   000001.XSHE(平安银行)、600519.XSHG(贵州茅台)、600036.XSHG(招商银行)、000333.XSHE(美的集团)、601318.XSHG(中国平安)、000858.XSHE(五粮液)、002415.XSHE(海康威视)、600276.XSHG(恒瑞医药)、300750.XSHE(宁德时代,创业板涨跌停±20%)、601012.XSHG(隆基绿能)
+5. 标的为任意**当前正常上市交易的 A 股股票或 ETF**(6 位代码 + 交易所后缀,如 600519.XSHG/000001.XSHE/300750.XSHE);平台对未包含的标的会**自动在线获取行情**(约 30~90 秒),已退市/长期停牌的标的无法回测;建议优先使用流动性好的标的,例如 600519.XSHG(贵州茅台)、000001.XSHE(平安银行)、300750.XSHE(宁德时代,创业板涨跌停±20%)等
 6. 只允许出现这些 import:import numpy as np、import pandas as pd、from rqalpha.const import POSITION_DIRECTION。
 7. 输出格式:只输出一个 python 代码块(完整可运行代码),不要输出解释文字、测试代码或调用示例。
 

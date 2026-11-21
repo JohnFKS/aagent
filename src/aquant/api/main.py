@@ -81,7 +81,8 @@ def _benchmark_label_of(oid: str | None) -> str:
 
 
 def _benchmark_check_or_400(benchmark: str | None):
-    """基准 oid 预校验:不在 bundle 的 oid 给可读 400,而不是让 rqalpha 报未知合约。
+    """基准 oid 预校验(仅 /api/verify 与 /api/arena 使用:这两条链路不经 adapter
+    标自适应;/api/backtest、/api/chat 与会话端点由 adapter 自动在线获取缺失标的)。
 
     :returns: None(合法或未设基准)或 JSONResponse(400)
     """
@@ -211,9 +212,7 @@ def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
     app.state 上可被测试整体替换。
     """
     benchmark = _resolve_benchmark(req.benchmark)
-    check = _benchmark_check_or_400(benchmark)
-    if check is not None:
-        return check
+    # 基准/标的白名单校验由 adapter 的标自适应接管(bundle 缺失时自动在线获取)
     store = getattr(request.app.state, "experience", None)
     if store is None:
         from aquant.agents.experience import ExperienceStore
@@ -273,9 +272,7 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
     供前端绘制"策略 vs A股基准"收益图。
     """
     benchmark = _resolve_benchmark(req.benchmark)
-    check = _benchmark_check_or_400(benchmark)
-    if check is not None:
-        return check
+    # 基准/标的白名单校验由 adapter 的标自适应接管(bundle 缺失时自动在线获取)
     # 校验配置:overrides 并入后交 Layer 1 lint(激进值在此被拦)
     run_config = build_run_config(
         req.start, req.end, cash=req.cash, benchmark=benchmark,
@@ -765,9 +762,7 @@ def _backtest_version(
 
     start, end = session["start"], session["end"]
     benchmark = _resolve_benchmark(session.get("benchmark"))
-    check = _benchmark_check_or_400(benchmark)
-    if check is not None:
-        raise HTTPException(status_code=400, detail=json.loads(check.body.decode("utf-8"))["detail"])
+    # 基准/标的白名单校验由 adapter 的标自适应接管
     run_config = build_run_config(start, end, cash=session.get("cash"), benchmark=benchmark)
     verifier = ValidationAgent()
     verdict = verifier.validate(code, run_config)
@@ -883,9 +878,7 @@ def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[st
         request.app.state.experience = experience
 
     session_benchmark = _resolve_benchmark(session.get("benchmark"))
-    check = _benchmark_check_or_400(session_benchmark)
-    if check is not None:
-        raise HTTPException(status_code=400, detail=json.loads(check.body.decode("utf-8"))["detail"])
+    # 基准/标的白名单校验由 adapter 的标自适应接管
     try:
         if current is None:
             # 首轮无既有策略:走既有从零生成管线(自带 review)。

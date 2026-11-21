@@ -41,9 +41,33 @@ class RealRunnerAdapter:
         bundle_path = kw.pop("bundle_path", None) or default_bundle_path()
         extension = None
         try:
-            from aquant.data.extend import ensure_coverage
+            from aquant.data.extend import (
+                InstrumentUnavailableError,
+                ensure_coverage,
+                extract_strategy_oids,
+            )
 
-            extension = ensure_coverage(bundle_path, start, end)
+            # 标的自适应:策略代码 + 基准中的 oid,bundle 缺失时自动在线获取
+            needed = extract_strategy_oids(code)
+            benchmark_kw = kw.get("benchmark")
+            if benchmark_kw and str(benchmark_kw).lower() != "none":
+                needed.add(str(benchmark_kw))
+            extension = ensure_coverage(bundle_path, start, end, extra_oids=needed)
+        except InstrumentUnavailableError as exc:
+            # 标的不可提供(不存在/已退市/无行情):可读失败,不进入回测
+            return {
+                "summary": None,
+                "portfolio": None,
+                "benchmark_portfolio": pd.DataFrame(),
+                "trades": [],
+                "verdict": None,
+                "unsafe": False,
+                "execution_error": str(exc),
+                "bundle_extension": None,
+                "run_log": [],
+                "strategy_prints": [],
+                "daily_holdings": [],
+            }
         except TimeoutError:
             pass  # 并发锁等待超时:放弃本次扩展,按原区间语义执行
         except Exception as exc:  # noqa: BLE001 覆盖检查异常不阻塞回测主链路

@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -38,11 +39,44 @@ __all__ = [
     "bundle_calendar",
     "ensure_coverage",
     "prune_stale_cache",
+    "extract_strategy_oids",
+    "InstrumentUnavailableError",
+    "mark_instruments_used",
     "MAX_AUTO_INSTRUMENTS",
 ]
 
+# 策略代码中的 order_book_id(6 位数字 + 交易所后缀)
+_OID_RE = re.compile(r"\b\d{6}\.(?:XSHE|XSHG|BJ)\b")
+
+
+class InstrumentUnavailableError(RuntimeError):
+    """策略请求的标的无法提供(不存在/已退市/区间无行情)→ API 层转可读 422。"""
+
+
+def extract_strategy_oids(code: str) -> set[str]:
+    """从策略源码提取 order_book_id 集合(契约要求 oid 以字面量出现在代码中)。"""
+    return set(_OID_RE.findall(code or ""))
+
+
+def mark_instruments_used(bundle_path: str | Path, oids: set[str]) -> None:
+    """登记标的使用时间(数据保留策略:长期未用的标的在下次重建时清理)。"""
+    bundle = Path(bundle_path)
+    ledger_file = bundle / "instrument_usage.json"
+    try:
+        try:
+            ledger: dict[str, str] = json.loads(ledger_file.read_text(encoding="utf-8"))
+        except Exception:
+            ledger = {}
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for oid in oids or []:
+            ledger[oid] = now
+        ledger_file.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass  # 台账写入失败不阻塞主流程
+
 # 自动扩展安全阀
 MAX_AUTO_INSTRUMENTS = 60
+DEFAULT_INSTRUMENT_RETENTION_DAYS = 90  # 标的保留:90 天未用自动清理
 DEFAULT_RETENTION_DAYS = 90
 LOCK_STALE_SECONDS = 600  # 锁文件超过 10 分钟视为残留,自动接管
 
@@ -52,6 +86,17 @@ _ENV_FLAG = "AQUANT_BUNDLE_AUTO_EXTEND"
 def auto_extend_enabled() -> bool:
     """AQUANT_BUNDLE_AUTO_EXTEND=0 时关闭自动扩展(默认开)。"""
     return os.environ.get(_ENV_FLAG, "1") != "0"
+
+
+def _looks_like_index(oid: str) -> bool:
+    """指数代码形态:沪 000/880 开头、深 395/399 开头(与个股代码空间区分)。"""
+    code = oid.split(".")[0] if "." in oid else oid
+    suffix = oid.split(".")[-1].upper() if "." in oid else "XSHG"
+    if suffix == "XSHG" and code.startswith(("000", "880")):
+        return True
+    if suffix == "XSHE" and code.startswith(("395", "399")):
+        return True
+    return False
 
 
 def _is_real_bundle(bundle: Path) -> bool:
@@ -123,32 +168,49 @@ def ensure_coverage(
     start: str,
     end: str,
     *,
+    extra_oids: set[str] | None = None,
     max_span_days: int = 3660,
     cache_retention_days: int = DEFAULT_RETENTION_DAYS,
+    instrument_retention_days: int = DEFAULT_INSTRUMENT_RETENTION_DAYS,
 ) -> dict | None:
-    """确保 bundle 日历覆盖 [start, end];不覆盖时自动重建扩展。
+    """确保 bundle 覆盖 [start, end] 与请求标的;缺失时自动在线获取并重建。
 
-    :returns: 扩展信息 dict(extended/prior/now/instruments/elapsed_seconds),
-              已覆盖或不需要扩展时返回 None
-    :raises: 重建失败不抛(告警并返回 None),由回测按原语义给出可读错误;
-             但锁等待超时等"并发异常"向上抛(调用方可决定是否重试)。
+    标的自适应(对应"可回测任何正常状态股票"):
+    - ``extra_oids`` 中不在 bundle 的标的 → Baostock 在线获取(日线+复权因子+
+      停牌/ST+名称),指数型代码(如 000905.XSHG)走指数注入;
+      已退市/无行情的标的抛 :class:`InstrumentUnavailableError`(API 层转可读 422);
+    - 使用台账(instrument_usage.json):每次请求登记标的最后使用时间;
+    - 数据保留:重建时清理**长期未使用**的标的(默认 90 天未用且不在本次请求中;
+      基准指数 INDX 永不清理),其行情与缓存随后由 DuckDB 保留策略淘汰。
+
+    :returns: 扩展信息 dict(extended/prior/now/added/evicted/...),
+              已覆盖且无缺失时返回 None
+    :raises InstrumentUnavailableError: 请求标的不可提供(用户可更换标的);
+             锁等待超时等并发异常向上抛。
     """
     bundle = Path(bundle_path)
     cal = bundle_calendar(bundle)
     if cal is None:
         return None  # bundle 缺失/不完整:交给 run_backtest 的既有错误语义
     bundle_start, bundle_end = cal
-    if start >= bundle_start and end <= bundle_end:
-        return None  # 已覆盖
+    instruments = load_instruments(bundle)
+    needed = {str(o) for o in (extra_oids or set()) if str(o)}
+    missing = {o for o in needed if o not in instruments}
+    if (
+        not missing
+        and start >= bundle_start
+        and end <= bundle_end
+    ):
+        # 完全覆盖:只登记使用台账,无需重建
+        mark_instruments_used(bundle, needed)
+        return None
 
     if not auto_extend_enabled():
         return None
     if not _is_real_bundle(bundle):
         return None  # 合成/测试 bundle 不自动扩展
-
-    instruments = load_instruments(bundle)
-    if len(instruments) == 0 or len(instruments) > MAX_AUTO_INSTRUMENTS:
-        return None  # 空表或超上限(大池子重建耗时长,提示手动构建)
+    if instruments and len(instruments) + len(missing) > MAX_AUTO_INSTRUMENTS:
+        return None  # 超上限(大池子重建耗时长,提示手动构建)
 
     # 扩展而非收缩:目标区间 = 请求区间 ∪ 现有区间
     new_start, new_end = min(start, bundle_start), max(end, bundle_end)
@@ -161,17 +223,108 @@ def ensure_coverage(
 
     t0 = time.time()
     with _FileLock(bundle.with_name(bundle.name + ".extend.lock")):
-        # 双检:并发场景下别的请求可能已完成扩展
+        # 双检:并发场景下别的请求可能已完成扩展(含标的)
         cal2 = bundle_calendar(bundle)
-        if cal2 and start >= cal2[0] and end <= cal2[1]:
+        existing2 = load_instruments(bundle)
+        if (cal2 and start >= cal2[0] and end <= cal2[1]
+                and needed <= set(existing2)):
+            mark_instruments_used(bundle, needed)
             return None
+
+        # 使用台账:迁移缺失条目为当前时间(存量标的宽限期内不受清理影响)
+        ledger_file = bundle / "instrument_usage.json"
+        try:
+            ledger: dict[str, str] = json.loads(ledger_file.read_text(encoding="utf-8"))
+        except Exception:
+            ledger = {}
+        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for oid in instruments:
+            ledger.setdefault(oid, now_iso)
+        for oid in needed:
+            ledger[oid] = now_iso
+
+        # 数据保留:长期未使用(且不在本次请求、非基准指数)的标的清理
+        cutoff = datetime.now() - timedelta(days=instrument_retention_days)
+        evicted: list[str] = []
+        for oid, inst in instruments.items():
+            if inst.get("type") == "INDX" or oid in needed:
+                continue
+            try:
+                last_used = datetime.strptime(ledger.get(oid, now_iso), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if last_used < cutoff:
+                evicted.append(oid)
+
+        # 新标的在线获取与校验:个股/ETF 走 Baostock 逐只预载(退市/无行情 → 可读异常),
+        # 指数形态代码走指数注入(Baostock 指数日线)
+        new_cs_codes: list[str] = []
+        index_frames: dict[str, "pd.DataFrame"] = {}
+        if missing:
+            from aquant.data.baostock_source import BaostockSource
+            from aquant.data.benchmark import fetch_baostock_index
+
+            probe = BaostockSource(sorted(missing), new_start, new_end)
+            for oid in sorted(missing):
+                if _looks_like_index(oid):
+                    try:
+                        index_frames[oid] = fetch_baostock_index(oid, new_start, new_end)
+                    except Exception as exc:  # noqa: BLE001
+                        raise InstrumentUnavailableError(
+                            f"基准指数 {oid} 无法提供行情数据:{exc}。请更换基准指数或标的。"
+                        ) from exc
+                    continue
+                try:
+                    probe._load(oid)
+                except ValueError as exc:
+                    raise InstrumentUnavailableError(
+                        f"标的 {oid} 无法提供行情数据,无法回测:{exc}。"
+                        "请确认代码正确且当前正常上市(已退市/长期停牌的标的无法回测)。"
+                    ) from exc
+                basic = probe._basics.get(oid) or {}
+                out_date = str(basic.get("outDate") or "")
+                status = str(basic.get("status") or "1")
+                if (out_date and out_date != "0000-00-00") or status == "0":
+                    raise InstrumentUnavailableError(
+                        f"标的 {oid} 已退市(退出日期 {out_date or '未知'}),无法回测;"
+                        "请更换为当前正常上市的标的。"
+                    )
+                new_cs_codes.append(oid)
+
+        # 重建合约清单 = 存量(剔除闲置清理) ∪ 新增;INDX 指数由注入路径处理
+        keep_oids = [
+            oid for oid, inst in instruments.items()
+            if inst.get("type") != "INDX" and oid not in evicted
+        ]
+        build_cs = sorted(set(keep_oids) | set(new_cs_codes))
 
         new_dir = bundle.with_name(bundle.name + f".ext-{int(time.time())}")
         old_dir = bundle.with_name(bundle.name + ".old")
         try:
-            _rebuild_for_coverage(bundle, new_dir, new_start, new_end)
-            if not bundle_calendar(new_dir):
-                raise RuntimeError("重建产物校验失败(缺 trading_dates/instruments)")
+            # 重建重试一次:Baostock 偶发限流/瞬时故障不至于让首次请求失败
+            last_rebuild_error: Exception | None = None
+            for attempt in range(2):
+                try:
+                    _rebuild_for_coverage(
+                        bundle, new_dir, new_start, new_end,
+                        cs_codes=build_cs, etf_codes=[], index_frames=index_frames,
+                    )
+                    if not bundle_calendar(new_dir):
+                        raise RuntimeError("重建产物校验失败(缺 trading_dates/instruments)")
+                    last_rebuild_error = None
+                    break
+                except InstrumentUnavailableError:
+                    raise  # 标的不可提供是确定性问题,重试无意义
+                except Exception as exc:  # noqa: BLE001
+                    last_rebuild_error = exc
+                    if new_dir.exists():
+                        shutil.rmtree(new_dir, ignore_errors=True)
+                    if attempt == 0:
+                        warnings.warn(
+                            f"bundle 重建第 1 次失败(将重试):{exc}", stacklevel=2
+                        )
+            if last_rebuild_error is not None:
+                raise last_rebuild_error
             # 原子换目录:旧目录改名备份 → 新目录就位 → 失败则回滚
             if old_dir.exists():
                 shutil.rmtree(old_dir, ignore_errors=True)
@@ -181,7 +334,9 @@ def ensure_coverage(
             except OSError:
                 os.rename(old_dir, bundle)  # 回滚:保证 bundle 始终在位
                 raise
-        except Exception as exc:  # noqa: BLE001 重建失败降级:告警后按原语义报错
+        except InstrumentUnavailableError:
+            raise  # 用户可修复(换标的),原样向上
+        except Exception as exc:  # noqa: BLE001 - 重建失败降级:告警后按原语义报错
             warnings.warn(f"bundle 自动扩展失败(回测将按原区间语义报错):{exc}", stacklevel=2)
             return None
         finally:
@@ -189,6 +344,7 @@ def ensure_coverage(
                 shutil.rmtree(new_dir, ignore_errors=True)
         if old_dir.exists():
             shutil.rmtree(old_dir, ignore_errors=True)  # 旧数据删除(可再生成)
+        mark_instruments_used(bundle, needed | set(keep_oids) | set(new_cs_codes) | set(index_frames))
 
     # 缓存保留策略:长期未访问的 K 线缓存一并清理
     pruned = prune_stale_cache(
@@ -199,74 +355,82 @@ def ensure_coverage(
         "prior": {"start": bundle_start, "end": bundle_end},
         "now": {"start": new_start, "end": new_end},
         "instruments": len(instruments),
+        "added": sorted(new_cs_codes) + sorted(index_frames),
+        "evicted": evicted,
         "cache_oids_removed": pruned,
         "elapsed_seconds": round(time.time() - t0, 1),
     }
 
 
 def _rebuild_for_coverage(
-    bundle: Path, out_dir: Path, start: str, end: str
+    bundle: Path,
+    out_dir: Path,
+    start: str,
+    end: str,
+    *,
+    cs_codes: list[str] | None = None,
+    etf_codes: list[str] | None = None,
+    index_frames: dict[str, "pd.DataFrame"] | None = None,
 ) -> None:
-    """按既有合约清单重建 bundle 到 out_dir(测试可 monkeypatch 替身)。
+    """按给定合约清单重建 bundle 到 out_dir(测试可 monkeypatch 替身)。
 
-    CS 用 BaostockSource(主)+ AKShare(跨源比价);ETF 用 EtfSource;
-    重建完成后重注入 bundle 内登记的 INDX 真实指数行情。
+    CS/ETF 均走 Baostock 主力源(同步等待场景下 AKShare 跨源比价会把重建拖到
+    分钟级);指数行情经 index_frames 注入(benchmark.inject_benchmark)。
     """
     from aquant.data.bundle import build_bundle
 
-    instruments = load_instruments(bundle)
-    cs_codes = [oid for oid, i in instruments.items() if i.get("type") == "CS"]
-    etf_codes = [oid for oid, i in instruments.items() if i.get("type") == "ETF"]
+    if cs_codes is None:
+        instruments = load_instruments(bundle)
+        cs_codes = [oid for oid, i in instruments.items() if i.get("type") in ("CS", "ETF")]
 
     sources = []
     if cs_codes:
         from aquant.data.baostock_source import BaostockSource
 
-        # 自动扩展只走 Baostock 主力源:同步等待场景下 AKShare 跨源比价会把
-        # 重建拖到分钟级(限流+重试);原构建的跨源结论见 cross_check.json
-        # (Baostock 为既有胜出源,直接沿用)。
         sources.append(BaostockSource(cs_codes, start, end))
     if etf_codes:
         from aquant.data.etf_source import EtfSource
 
         sources.append(EtfSource(codes=etf_codes, start=start, end=end, names={}))
-    if not sources:
-        raise RuntimeError("bundle 内无可重建合约(CS/ETF 均为空)")
+    if not sources and not index_frames:
+        raise RuntimeError("无可重建合约(CS/ETF/指数均为空)")
 
-    selected = sources[0]
-    cache_key = f"autoextend_{selected.oids if hasattr(selected, 'oids') else len(cs_codes)}_{start}_{end}"
-    try:
-        from aquant.data.duckdb_cache import DuckDBCache
-
-        selected = DuckDBCache(
-            selected,
-            Path.home() / ".aquant" / "cache" / "duckdb",
-            cache_key,
-            max_size_mb=512.0,
-        )
-    except Exception:
-        pass  # 缓存不可用时直连数据源
-
-    build_bundle([selected], out_dir, fill_missing_factors=True)
-    if hasattr(selected, "close"):
+    selected = sources[0] if sources else None
+    if selected is not None:
+        cache_key = f"autoextend_{getattr(selected, 'oids', len(cs_codes or []))}_{start}_{end}"
         try:
-            selected.close()
+            from aquant.data.duckdb_cache import DuckDBCache
+
+            selected = DuckDBCache(
+                selected,
+                Path.home() / ".aquant" / "cache" / "duckdb",
+                cache_key,
+                max_size_mb=512.0,
+            )
         except Exception:
-            pass
+            pass  # 缓存不可用时直连数据源
 
-    # 重注入真实基准指数(重建后 indexes.h5 只有合成回退)
-    index_oids = [oid for oid, i in instruments.items() if i.get("type") == "INDX"]
-    if index_oids:
-        from aquant.data.benchmark import fetch_baostock_index, inject_benchmark
-
-        frames = {}
-        for oid in index_oids:
+        build_bundle([selected], out_dir, fill_missing_factors=True)
+        if hasattr(selected, "close"):
             try:
-                frames[oid] = fetch_baostock_index(oid, start, end)
+                selected.close()
             except Exception:
-                continue  # 单只失败不阻塞;缺的指数回退合成形态
-        if frames:
-            inject_benchmark(out_dir, frames)
+                pass
+    else:
+        # 只有指数注入:以现有合约清单 + 指数重建(避免空 bundle)
+        instruments = load_instruments(bundle)
+        cs_all = [oid for oid, i in instruments.items() if i.get("type") in ("CS", "ETF")]
+        if not cs_all:
+            raise RuntimeError("bundle 无 CS/ETF 合约,无法仅凭指数重建")
+        from aquant.data.baostock_source import BaostockSource
+
+        build_bundle([BaostockSource(cs_all, start, end)], out_dir, fill_missing_factors=True)
+
+    # 注入真实基准/指数行情(重建后 indexes.h5 只有合成回退;含新增指数)
+    if index_frames:
+        from aquant.data.benchmark import inject_benchmark
+
+        inject_benchmark(out_dir, index_frames)
 
     (out_dir / "bundle_meta.json").write_text(
         json.dumps(
@@ -275,13 +439,14 @@ def _rebuild_for_coverage(
                 "reason": "auto_extend",
                 "start": start,
                 "end": end,
-                "instruments": len(instruments),
+                "instruments": len(load_instruments(out_dir)),
             },
             ensure_ascii=False,
             indent=2,
         ),
         encoding="utf-8",
     )
+
 
 
 def prune_stale_cache(cache_dir: str | Path, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:
