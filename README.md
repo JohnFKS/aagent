@@ -292,13 +292,18 @@ curl -s -X POST localhost:8000/api/arena -H 'content-type: application/json' -d 
 错误语义:校验拦截 422(附 verdict)、bundle 缺失 400(附构建指引)、
 LLM 故障 502、限流 429、token 无效 401/权限不足 403——全部中文可读 body。
 
-## 方式四:MCP Server
+## 方式四:MCP Server(agent 自主模式,推荐)
+
+在 Claude Code / ZCode / Codex 等 agent 框架里接入后,**无需平台配置 LLM、无需启动
+REST 服务**,agent 框架内的大模型即可通过对话完成「策略编写 → 校验 → 回测 → 诊断
+迭代 → 结果汇报」全流程 —— 策略"思考"由 agent 自身模型完成,平台只提供确定性的
+校验 / 回测 / 诊断 / 数据服务(与 Web 端同一套四层校验与保守参数)。
 
 ```bash
-python -m aquant.mcp_server.server     # stdio 模式,接 Claude Desktop 等客户端
+python -m aquant.mcp_server.server     # stdio 模式;direct 直调,默认无需 REST 服务
 ```
 
-客户端配置示例(Claude Desktop `claude_desktop_config.json`):
+客户端配置示例(Claude Desktop / Claude Code / ZCode 的 mcpServers):
 
 ```json
 {
@@ -306,28 +311,44 @@ python -m aquant.mcp_server.server     # stdio 模式,接 Claude Desktop 等客�
     "aquant": {
       "command": "/path/to/aagent/.venv/bin/python",
       "args": ["-m", "aquant.mcp_server.server"],
-      "env": {
-        "AQUANT_API_BASE": "http://127.0.0.1:8000",
-        "AQUANT_MCP_TOKEN": "tkn_xxx"
-      }
+      "env": { "AQUANT_MCP_MODE": "direct", "AQUANT_BUNDLE_PATH": "~/.aquant/bundle-baostock" }
     }
   }
 }
 ```
 
-24 个工具:
-- 单次工具(8):`platform_health` / `platform_validate_code` / `platform_run_backtest` /
-  `platform_optimize`(AI 自动优化,2 轮常见 3~8 分钟)/ `platform_verify_layered`(防过拟合)/
-  `platform_get_kline` / `platform_arena` / `platform_workflow_guide`(不确定如何开始时先调用);
-- 多轮会话(9):`platform_session_create` / `platform_session_list` / `platform_session_get` /
-  `platform_session_turn`(按对话要求改码+回测+落版本)/ `platform_session_edit_code` /
-  `platform_session_backtest` / `platform_session_rollback` / `platform_session_versions` /
-  `platform_session_diff`(版本变更对比);
-- CRUD 与永久删除(7):`platform_session_purge`(不可恢复) / `platform_session_turns` /
-  `platform_session_turn_add` / `platform_session_turn_update` / `platform_session_turn_delete` /
-  `platform_session_version_update` / `platform_session_version_delete`。
+**两种模式**(`AQUANT_MCP_MODE`,默认 `direct`):
+- `direct`(默认):进程内直调领域服务 —— 不依赖 uvicorn、不依赖平台 LLM;token 闸门
+  (AQUANT_MCP_TOKEN(S))语义与 REST 一致(fail-closed);
+- `proxy`:经典薄桥,HTTP 转发到 `AQUANT_API_BASE`(默认 http://127.0.0.1:8000,需先启动
+  服务);重编排场景(chat 会话轮次 / optimize)在 proxy 模式下可用平台 LLM。
 
-非法参数与非 2xx 一律返回**可读中文错误文本**(不抛异常),让 LLM 自纠。
+**28 个工具**,agent 自主闭环核心:
+
+- `platform_strategy_contract` — 策略代码契约(入口函数 / history_bars 一维数组语义 /
+  下单规范 / 禁令清单 + 参考骨架),写码前必读;
+- `platform_list_instruments` — 标的池 / 可用基准 / 数据区间(动态读 bundle);
+- `platform_run_backtest` — 真实回测(可传 benchmark 对照;区间超出数据范围自动拉取
+  最新行情),返回指标 + 净值曲线摘要 + 成交明细 + **人读 Markdown 报告**(可直接向用户汇报);
+- `platform_diagnose_strategy` — 回测 + 规则诊断(无成交 / 换手过高 / 成本侵蚀 /
+  回撤偏大 / 胜率偏低),改码方向由 agent 自行决定;
+- `platform_rank_strategies` — 多候选按(夏普,年化,-回撤)排名,挑最优;
+- `platform_validate_code` / `platform_verify_layered` / `platform_arena` / `platform_get_kline` /
+  `platform_workflow_guide` — 校验 / 防过拟合 / 竞技场 / 行情 / 工作流指南;
+- 会话工具(16 个):版本化保存、手动回测、回退、diff、增删改查(direct 下全部可用,
+  且不依赖平台 LLM);`platform_session_turn`(agent 改码)与 `platform_optimize`
+  需要平台 LLM,未配置时返回 503 并指引 agent 走自主闭环。
+
+**典型对话流**(agent 在自己框架里完成):
+
+```
+用户:帮我写一个贵州茅台的双均线策略并回测
+agent:platform_strategy_contract → platform_list_instruments(选 600519.XSHG)
+      → 写码 → platform_validate_code(按 findings 修正)→ platform_run_backtest
+      → 向用户汇报:总收益/相对沪深300 超额/最大回撤/成交笔数 + 报告
+用户:胜率太低了,优化一下
+agent:platform_diagnose_strategy → 依据线索改码 → 复测 → 对比前后指标 → 汇报
+```
 
 ## 外部 Agent 模式(external-agent/)
 

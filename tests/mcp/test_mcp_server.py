@@ -180,9 +180,12 @@ class TestPlatformRunBacktest:
             monkeypatch, {("POST", "/api/backtest"): (200, body)}
         )
         text = server.platform_run_backtest(GOOD_CODE, START, END, cash=100000.0)
-        parsed = _assert_json(text)
+        # 200 = JSON 结果 + 分隔线 + 人读 Markdown 报告(agent 可直接引用汇报)
+        json_part, _, report_part = text.partition("\n\n---\n\n")
+        parsed = json.loads(json_part)
         assert parsed["passed"] is True
         assert parsed["metrics"]["sharpe"] == 1.1
+        assert "回测报告" in report_part
         sent = json.loads(recorder.requests[0].content)
         assert sent == {"code": GOOD_CODE, "start": START, "end": END, "cash": 100000.0}
 
@@ -551,28 +554,28 @@ class TestPlatformArena:
 # tool:platform_workflow_guide(静态文本,不转发后端)
 # ---------------------------------------------------------------------------
 class TestPlatformWorkflowGuide:
-    def test_contains_seven_steps_and_validate_entry(self):
+    def test_contains_core_tools_and_loop(self):
         text = server.platform_workflow_guide()
-        assert "七步" in text
+        # agent 自主闭环:契约 → 校验 → 回测 → 诊断 → 对比 → 分层验证 → 汇报
+        assert "platform_strategy_contract" in text
         assert "platform_validate_code" in text
         assert "platform_run_backtest" in text
-        assert "platform_optimize" in text
+        assert "platform_diagnose_strategy" in text
+        assert "platform_rank_strategies" in text
         assert "platform_verify_layered" in text
-        assert "platform_arena" in text
-        assert "platform_get_kline" in text
+        assert "汇报" in text
 
-    def test_contains_template_and_api_constraints(self):
+    def test_contains_contract_constraints(self):
         text = server.platform_workflow_guide()
-        assert "history_bars" in text and "ndarray" in text
-        assert "POSITION_DIRECTION" in text
-        assert "strategies/" in text and "reports/" in text
+        assert "history_bars" in text and "一维" in text
+        # 详细契约(POSITION_DIRECTION/骨架)由 platform_strategy_contract 提供
+        assert "platform_strategy_contract" in text
 
-    def test_is_plain_text_no_network(self, monkeypatch):
-        """不转发后端:未配置 transport 也直接返回文本。"""
-        monkeypatch.setattr(server, "_TRANSPORT", None)
+    def test_is_plain_text_no_network(self):
+        """纯本地文本:direct 模式下无任何网络请求。"""
         text = server.platform_workflow_guide()
-        assert text.startswith("AQ-Platform")
-        assert "防过拟合" in text
+        assert text.startswith("当前 MCP 模式:")
+        assert "策略大脑" in text
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +607,11 @@ class TestToolRegistration:
         "platform_get_kline",
         "platform_arena",
         "platform_workflow_guide",
+        # agent 自主模式新工具(契约/标的池/诊断/排名)
+        "platform_strategy_contract",
+        "platform_list_instruments",
+        "platform_diagnose_strategy",
+        "platform_rank_strategies",
         "platform_session_create",
         "platform_session_list",
         "platform_session_get",
@@ -629,10 +637,10 @@ class TestToolRegistration:
         for tool in tools:
             assert tool.description  # 每个 tool 都有中文描述
 
-    def test_tools_list_count_is_24(self):
-        """tools/list 数量 = 24(8 个单次工具 + 16 个会话/CRUD 工具)。"""
+    def test_tools_list_count_is_28(self):
+        """tools/list 数量 = 28(12 个单次工具 + 16 个会话/CRUD 工具)。"""
         tools = asyncio.run(server.mcp.list_tools())
-        assert len(tools) == 24
+        assert len(tools) == 28
 
     def test_long_running_tools_have_time_expectations_in_description(self):
         """optimize/verify/arena 的 description 必须写明耗时预期,供外部 agent 决策。"""

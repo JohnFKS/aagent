@@ -735,9 +735,19 @@ def _session_metrics_summary(metrics: dict[str, Any] | None) -> str:
 
 
 def _backtest_version(
-    request: Request, sid: str, code: str, session: dict[str, Any]
+    request: Request | None,
+    sid: str,
+    code: str,
+    session: dict[str, Any],
+    *,
+    store: Any | None = None,
+    runner: Any | None = None,
 ) -> dict[str, Any]:
-    """回测指定代码并把指标写回会话当前版本;校验不过抛 422 结构化错误。"""
+    """回测指定代码并把指标写回会话当前版本;校验不过抛 422 结构化错误。
+
+    store/runner 显式注入时(direct 模式,无 FastAPI Request)优先使用;
+    否则沿用 request.app.state 依赖注入(REST 语义,行为不变)。
+    """
     from aquant.agents.orchestrator import (
         _extract_benchmark_series,
         _extract_metrics,
@@ -763,7 +773,8 @@ def _backtest_version(
             exec_kw["cash"] = session["cash"]
         if benchmark:
             exec_kw["benchmark"] = benchmark
-        outcome = BacktestAgent(_get_runner(request)).execute(
+        runner_obj = runner if runner is not None else _get_runner(request)
+        outcome = BacktestAgent(runner_obj).execute(
             code, start, end, run_config=run_config, **exec_kw
         )
     except FileNotFoundError as exc:
@@ -776,8 +787,9 @@ def _backtest_version(
     series = _extract_portfolio_series(outcome["result"])
     benchmark_series = _extract_benchmark_series(outcome["result"])
     current_id = str(session.get("current_version") or "")
+    store_obj = store if store is not None else _get_store(request)
     if current_id:
-        _get_store(request).update_version(
+        store_obj.update_version(
             sid, current_id,
             metrics=metrics, verdict=verdict.to_dict(),
             backtest={

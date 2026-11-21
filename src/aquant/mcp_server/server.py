@@ -1,21 +1,30 @@
-"""AQ-Platform MCP server(薄桥模式,stdio)。
+"""AQ-Platform MCP server(stdio;direct / proxy 双模式)。
 
-设计取自 microsoft 生态调研中 tick-stock-panel 的 mcp-server 先例:
-- 本模块只做「MCP tool ↔ 本地 FastAPI」的 HTTP 转发,tools 内不 import
-  aquant.runner / aquant.agents 等重依赖(纯薄桥,回测逻辑全部留在后端 API);
-- 非 2xx 与连接失败一律返回「可读错误文本」而不抛异常,让 LLM 依据文本自行纠错
+设计取自 microsoft 生态调研中 tick-stock-panel 的 mcp-server 先例,并升级为
+**agent 自主模式**:外部 agent 框架(Claude Code / ZCode / Codex…)自带大模型,
+平台侧**无需配置 LLM、无需启动 REST 服务**即可完成「策略编辑 → 校验 → 回测 →
+诊断迭代 → 结果汇报」全流程 —— 策略"思考"由 agent 模型完成,平台只提供
+确定性的校验 / 回测 / 诊断 / 数据服务。
+
+两种模式(AQUANT_MCP_MODE,默认 direct):
+- **direct(默认)**:tools 经 aquant.mcp_server.service 进程内直调领域服务
+  (与 REST 端点同语义:同一套四层校验、保守参数、自动数据扩展),不依赖 uvicorn;
+- **proxy**:沿用原薄桥行为,HTTP 转发到 AQUANT_API_BASE(需先启动 uvicorn),
+  兼容既有部署与测试(MockTransport)。
+
+通用约定(两模式一致):
+- 非 2xx 与异常一律返回「可读错误文本」而不抛异常,让 LLM 依据文本自行纠错
   (例如校验被拦截时把 findings 摘要拼进返回文本,LLM 可据此修改策略代码重试);
-- 后端地址默认 http://127.0.0.1:8000,可用环境变量 AQUANT_API_BASE 覆盖;
-- 可选 token:AQUANT_MCP_TOKEN 非空时,每个请求自动附加 X-MCP-Token 头;
-  未设置但 AQUANT_MCP_TOKENS 配置了多 token 时,默认取第一个 readwrite token
-  (与后端 aquant.api.token_gate 的多 token 闸门配对);都没有则不带头
-  (本机单用户模式)。
+- 可选 token:AQUANT_MCP_TOKEN 非空时,direct 模式按 token_gate 语义校验、
+  proxy 模式自动附加 X-MCP-Token 头(AQUANT_MCP_TOKENS 多 token 时取第一个
+  readwrite);都没有则开放(本机单用户模式)。
 
 运行方式(stdio):
     .venv/bin/python -m aquant.mcp_server.server
 
-测试注入点:monkeypatch 本模块的 ``_TRANSPORT`` 为 httpx.MockTransport,
-即可在不启动真实后端的情况下覆盖全部 tool 的行为。
+测试注入点:proxy 模式下 monkeypatch 本模块的 ``_TRANSPORT`` 为
+httpx.MockTransport;direct 模式 monkeypatch
+``aquant.mcp_server.service`` 的 handler / 数据函数。
 """
 
 import json
@@ -51,14 +60,15 @@ mcp = _MCPServer(
         "分层验证(防过拟合)、多策略竞技场、K 线行情查询。"
     ),
     instructions=(
-        "本 server 是本地量化平台的薄桥。典型用法:"
-        "先 platform_health 确认后端可用;写/改策略代码后用 platform_validate_code "
-        "做 Layer 1 校验(返回 findings 可指导修改);校验通过后用 platform_run_backtest "
-        "执行真实回测;platform_optimize 做 AI 优化、platform_verify_layered 做分层验证"
-        "(防过拟合必做)、platform_arena 做多策略排名、platform_get_kline 查行情。"
-        "不确定如何开始时先调用 platform_workflow_guide 获取七步工作流指南。"
-        "若返回文本中包含错误或校验 findings,请按提示修正参数/代码后重试,"
-        "不要向用户原样抛出堆栈。"
+        "你是量化策略的执行平台:策略代码的『思考与编写』由你(agent 框架内的大模型)"
+        "完成,平台提供确定性的校验/回测/诊断/数据服务。标准闭环:"
+        "platform_strategy_contract 拿代码契约 → platform_list_instruments 查标的池与"
+        "数据区间 → 按契约写码 → platform_validate_code 校验(按 findings 修正)→ "
+        "platform_run_backtest 回测(返回指标/曲线摘要/成交/人读报告,可直接向用户汇报)→ "
+        "platform_diagnose_strategy 诊断(无成交/换手/成本/回撤/胜率线索)→ 你改码迭代 → "
+        "platform_rank_strategies 多候选对比 → platform_verify_layered 防过拟合 → "
+        "把报告用你的口吻汇报给用户。不确定如何开始时先调用 platform_workflow_guide。"
+        "所有失败都返回可读中文文本,按提示修正参数/代码后重试,不要向用户原样抛堆栈。"
     ),
 )
 
@@ -141,6 +151,32 @@ def _code_error(tool: str, code: str) -> str | None:
     return None
 
 
+def _mode() -> str:
+    """MCP 模式:direct(默认,进程内直调)/ proxy(HTTP 薄桥,需先启动服务)。"""
+    return os.environ.get("AQUANT_MCP_MODE", "direct").strip().lower()
+
+
+class _DirectResponse:
+    """service_request 结果的 httpx.Response 形状垫片(零改动兼容既有 tools)。
+
+    只实现 tools 实际消费的面:is_success / status_code / json() / text。
+    """
+
+    def __init__(self, status_code: int, data: Any) -> None:
+        self.status_code = status_code
+        self._data = data
+        self.text = json.dumps(data, ensure_ascii=False) if data is not None else ""
+
+    @property
+    def is_success(self) -> bool:
+        return 200 <= self.status_code < 300
+
+    def json(self) -> Any:
+        if self._data is None:
+            raise ValueError("direct 响应体为空")
+        return self._data
+
+
 def _request(
     method: str,
     path: str,
@@ -149,11 +185,20 @@ def _request(
     params: dict[str, str] | None = None,
     timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> httpx.Response:
-    """向后端发一次 HTTP 请求;配置了 token 时附带 X-MCP-Token 头。
+    """按模式转发一次平台请求(direct 进程内直调 / proxy HTTP)。
 
-    timeout 按端点耗时选择(默认 60s;optimize 用 900s 长读超时);
+    timeout 仅 proxy 模式生效(direct 为进程内调用,无网络超时);
     params 为 GET/POST 共用的 query 参数。
     """
+    if _mode() != "proxy":
+        from aquant.mcp_server import service
+
+        try:
+            status, data = service.service_request(method, path, json_payload, query=params)
+        except Exception as exc:  # noqa: BLE001 - direct 内部错误同样降级为可读文本
+            return _DirectResponse(500, {"detail": f"direct 模式内部错误:{type(exc).__name__}: {exc}"})
+        return _DirectResponse(status, data)
+
     headers: dict[str, str] = {}
     token = _outgoing_token()
     if token:
@@ -376,15 +421,25 @@ def platform_validate_code(code: str, start: str | None = None, end: str | None 
     description=(
         "执行真实回测(代码需已通过 Layer 1 校验,后端会再做一次硬门禁)。"
         "参数:code(必填,RQAlpha 策略源码);start/end(必填,YYYY-MM-DD 回测区间);"
-        "cash(可选,初始资金,缺省用平台默认)。"
-        "转发 POST /api/backtest,成功返回 {passed, verdict, metrics, trades_count} JSON 文本;"
-        "HTTP 422 表示策略校验未通过(返回文本含 findings 摘要与 verdict),"
-        "HTTP 400 表示数据 bundle 缺失(返回文本含构建指引)。"
+        "cash(可选,初始资金,缺省用平台默认);"
+        "benchmark(可选,A股基准 oid:000001.XSHG 上证指数/000300.XSHG 沪深300/"
+        "bundle 内任意标的,缺省上证指数,'none' 关闭)。"
+        "成功返回 {passed, verdict, metrics, portfolio_series, benchmark_series, trades, "
+        "benchmark, benchmark_label} JSON + 人读 Markdown 报告(report_md,可直接向用户汇报)。"
+        "区间超出数据范围时平台会自动拉取最新行情(首次约 30~90s);"
+        "HTTP 422 表示校验未通过或执行崩溃(文本含 findings/错误与修复指引),"
+        "HTTP 400 表示基准不在 bundle 或数据 bundle 缺失。"
         "请依据返回文本修正代码或环境后重试。"
     )
 )
-def platform_run_backtest(code: str, start: str, end: str, cash: float | None = None) -> str:
-    """转发 POST /api/backtest;200 返回 metrics JSON,422/400 返回结构化可读文本。"""
+def platform_run_backtest(
+    code: str,
+    start: str,
+    end: str,
+    cash: float | None = None,
+    benchmark: str | None = None,
+) -> str:
+    """转发 POST /api/backtest;200 返回 metrics JSON + 人读报告,422/400 返回结构化文本。"""
     err = _code_error("platform_run_backtest", code) or _date_error(
         "platform_run_backtest", ("start", start), ("end", end)
     )
@@ -395,15 +450,27 @@ def platform_run_backtest(code: str, start: str, end: str, cash: float | None = 
     payload: dict[str, Any] = {"code": code, "start": start, "end": end}
     if cash is not None:
         payload["cash"] = cash
+    if benchmark is not None:
+        payload["benchmark"] = benchmark
     try:
         resp = _request("POST", "/api/backtest", json_payload=payload)
     except Exception as exc:  # noqa: BLE001
         return _transport_error_text("platform_run_backtest", exc)
     if resp.is_success:
         try:
-            return _json_text(resp.json())
+            data: Any = resp.json()
         except Exception:  # noqa: BLE001
             return f"平台返回了非 JSON 响应(HTTP {resp.status_code}):{resp.text}"
+        # 附人读报告:agent 可直接引用该 Markdown 向用户汇报(两模式均可生成)
+        try:
+            from aquant.agents.reporting import format_backtest_report
+
+            report = format_backtest_report(
+                data, benchmark_label=data.get("benchmark_label") if isinstance(data, dict) else None
+            )
+            return _json_text(data) + "\n\n---\n\n" + report
+        except Exception:  # noqa: BLE001 - 报告生成失败不掩盖回测结果
+            return _json_text(data)
     if resp.status_code == 422:
         # 校验拦截:422 + verdict(findings 摘要拼进文本,LLM 改代码后重试)
         try:
@@ -683,12 +750,185 @@ AQ-Platform 外部 agent 工作流指南(七步全流程:
 
 @mcp.tool(
     description=(
-        "返回 AQ-Platform 外部 agent 工作流指南(七步全流程);不确定如何开始时先调用本工具。"
+        "返回 agent 自主工作流指南(契约→校验→回测→诊断迭代→对比→汇报;平台无需配置 LLM);"
+        "不确定如何开始时先调用本工具。"
     )
 )
 def platform_workflow_guide() -> str:
-    """返回静态七步工作流文本(不转发后端,无网络请求)。"""
-    return WORKFLOW_GUIDE
+    """返回 agent 自主工作流指南(平台无需配置 LLM,由 agent 模型担任策略大脑)。"""
+    try:
+        from aquant.agents.contract import workflow_text
+
+        mode = _mode()
+        mode_line = (
+            f"当前 MCP 模式:{mode}(direct=进程内直调,无需启动 REST 服务)。"
+            if mode != "proxy"
+            else "当前 MCP 模式:proxy(HTTP 薄桥,需先启动 uvicorn 服务)。"
+        )
+        return mode_line + "\n\n" + workflow_text()
+    except Exception as exc:  # noqa: BLE001
+        return f"工作流指南生成失败:{type(exc).__name__}: {exc}"
+
+
+def _pct(v: Any) -> str:
+    """百分比格式化(None/非法 → '—';0.12 → 12.00%)。"""
+    try:
+        num = float(v)
+        return f"{num * 100:.2f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
+# ---------------------------------------------------------------------------
+# Agent 自主模式新工具:契约 / 标的池 / 诊断 / 多候选排名
+# (策略"思考"由 agent 框架内的大模型完成,平台只做确定性校验/回测/诊断)
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    description=(
+        "获取策略代码契约与编写规则(RQAlpha 6.5.0 日线):入口函数、history_bars 一维数组"
+        "语义、下单规范、禁令清单(未来函数/墙钟时间/外部数据)、参考骨架,附当前 bundle 的"
+        "标的池与数据区间。写策略代码前必读 —— 违反任意一条都会被 Layer 1 校验拒绝。"
+    )
+)
+def platform_strategy_contract() -> str:
+    """返回策略代码契约全文(附动态标的池);无网络请求。"""
+    try:
+        from aquant.agents.contract import contract_text
+
+        return contract_text()
+    except Exception as exc:  # noqa: BLE001
+        return f"契约生成失败:{type(exc).__name__}: {exc}"
+
+
+@mcp.tool(
+    description=(
+        "查询当前数据 bundle 的标的池(oid/名称/类型)、可用基准指数与数据区间。"
+        "策略代码里的标的、benchmark 参数、回测日期都应从此工具的返回中选择;"
+        "回测区间超出数据范围时平台会自动拉取最新行情(首次约 30~90s)。"
+    )
+)
+def platform_list_instruments() -> str:
+    """返回标的池与数据区间(动态读 bundle);无网络请求。"""
+    try:
+        from aquant.agents.contract import stock_pool_text
+        from aquant.config.schema import default_bundle_path
+        from aquant.data.instruments import load_instruments
+
+        insts = load_instruments(default_bundle_path())
+        header = f"bundle 路径:{default_bundle_path()}(合约 {len(insts)} 个)"
+        return header + "\n\n" + stock_pool_text()
+    except Exception as exc:  # noqa: BLE001
+        return f"标的池查询失败:{type(exc).__name__}: {exc}"
+
+
+@mcp.tool(
+    description=(
+        "回测 + 规则诊断:执行真实回测后按指标规则生成改进线索(无成交/换手过高/成本占比/"
+        "回撤偏大/胜率偏低),并给出当前指标。诊断是确定性规则(无 LLM);如何改码由你决定,"
+        "改完用 platform_validate_code + platform_run_backtest 重测。"
+        "参数与 platform_run_backtest 一致。"
+    )
+)
+def platform_diagnose_strategy(
+    code: str,
+    start: str,
+    end: str,
+    cash: float | None = None,
+    benchmark: str | None = None,
+) -> str:
+    """回测 + 规则诊断;422/400 返回与 platform_run_backtest 同型的可读文本。"""
+    err = _code_error("platform_diagnose_strategy", code) or _date_error(
+        "platform_diagnose_strategy", ("start", start), ("end", end)
+    )
+    if err:
+        return err
+    payload: dict[str, Any] = {"code": code, "start": start, "end": end}
+    if cash is not None:
+        payload["cash"] = cash
+    if benchmark is not None:
+        payload["benchmark"] = benchmark
+    try:
+        resp = _request("POST", "/api/backtest", json_payload=payload)
+    except Exception as exc:  # noqa: BLE001
+        return _transport_error_text("platform_diagnose_strategy", exc)
+    if not resp.is_success:
+        if resp.status_code == 422:
+            return platform_run_backtest(code, start, end, cash=cash, benchmark=benchmark)
+        return _error_text(
+            "platform_diagnose_strategy", "POST", "/api/backtest", resp, hint=BACKTEST_HINT
+        )
+    try:
+        data: Any = resp.json()
+    except Exception:  # noqa: BLE001
+        return f"平台返回了非 JSON 响应(HTTP {resp.status_code}):{resp.text}"
+    if not isinstance(data, dict):
+        return _json_text(data)
+
+    from aquant.agents.optimizer import _diagnose
+
+    metrics = data.get("metrics") or {}
+    trades_count = data.get("trades_count")
+    clues = _diagnose(metrics, int(trades_count or 0), cash)
+    lines = [
+        "## 回测诊断(规则式,无 LLM)",
+        "",
+        f"- 区间 {metrics.get('start', start)} ~ {metrics.get('end', end)},"
+        f"成交 {trades_count if trades_count is not None else '?'} 笔",
+        f"- 总收益 {_pct(metrics.get('total_returns'))} | 年化 {_pct(metrics.get('annualized_returns'))}"
+        f" | 最大回撤 {_pct(metrics.get('max_drawdown'))} | 夏普 {metrics.get('sharpe', '—')}",
+        f"- 基准收益 {_pct(metrics.get('benchmark_total_returns'))}"
+        f" | 换手率 {_pct(metrics.get('turnover'))} | 胜率 {_pct(metrics.get('win_rate'))}",
+        "",
+    ]
+    if clues:
+        lines.append("### 改进线索(按规则命中)")
+        lines.append("")
+        for clue in clues:
+            lines.append(f"- {clue}")
+        lines.append("")
+        lines.append("由你(agent 大模型)决定如何改码:调整参数/加过滤/改出场逻辑,"
+                     "改完走 validate → backtest 复测,并把每轮结果告诉用户。")
+    else:
+        lines.append("未命中任何规则线索:指标无显著异常,可继续用 "
+                     "platform_verify_layered 做防过拟合验证。")
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    description=(
+        "多候选策略排名:传入 [{name, metrics}] 列表(metrics 取自各次 "
+        "platform_run_backtest 返回),按(夏普, 年化, -最大回撤)元组降序排名并渲染表格,"
+        "便于挑出最优版本向用户汇报。纯本地计算,无网络请求。"
+    )
+)
+def platform_rank_strategies(candidates: list[dict[str, Any]]) -> str:
+    """对多份回测 metrics 排名(复用 verify.metrics.rank_candidates)。"""
+    if not candidates or not isinstance(candidates, list):
+        return _param_error_text("platform_rank_strategies", "candidates 必须是非空数组(每项含 name 与 metrics)")
+    try:
+        from aquant.verify.metrics import rank_candidates, render_ranking
+
+        summaries = {}
+        for item in candidates:
+            name = str(item.get("name") or "未命名")
+            summaries[name] = item.get("metrics") or {}
+        ranked = rank_candidates(summaries)
+        table = render_ranking(ranked)
+        best = ranked[0] if ranked else None
+        lines = ["## 多候选排名(夏普 → 年化 → 低回撤)", "", table, ""]
+        if best:
+            lines.append(
+                f"最优候选:**{best.get('name')}**"
+                f"(年化 {_pct(best.get('annualized_returns'))},"
+                f"夏普 {best.get('sharpe', '—')},"
+                f"回撤 {_pct(best.get('max_drawdown'))})"
+            )
+        lines.append("\n把排名与最优候选的关键指标整理成汇报即可;防过拟合可对最优候选再跑 "
+                     "platform_verify_layered。")
+        return "\n".join(lines)
+    except Exception as exc:  # noqa: BLE001
+        return f"排名失败:{type(exc).__name__}: {exc}"
 
 
 # ---------------------------------------------------------------------------

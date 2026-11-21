@@ -1,18 +1,21 @@
 ---
 name: aquant-quant
-description: 当用户要求编写/回测/优化/验证 A 股量化策略,或提到 AQ-Platform/AQ-Platform MCP 量化工具时使用。通过 MCP 工具完成策略编辑→生成→回测→优化→验证全流程。
+description: 当用户要求编写/回测/优化/验证 A 股量化策略,或提到 AQ-Platform/AQ-Platform MCP 量化工具时使用。通过 MCP 工具完成「策略编写→校验→回测→诊断迭代→验证→汇报」全流程;平台无需配置 LLM(策略思考由你——agent 框架内的大模型——完成)。
 ---
 
-# AQ-Platform A 股量化策略方法论
+# AQ-Platform A 股量化策略方法论(agent 自主模式)
 
-通过 AQ-Platform 的 MCP 工具完成「策略编辑→生成→回测→优化→验证」全流程。分工原则:**策略文件用你自己的文件工具读写;校验/回测/优化/验证等重活一律交给 MCP 工具**,不要在本地复现回测逻辑。所有工具依赖平台 API 已运行(地址由 AQUANT_API_BASE 控制,默认 http://127.0.0.1:8000)。
+分工原则:**策略代码的"思考与编写"由你完成;校验/回测/诊断/排名/数据等确定性
+重活一律交给 MCP 工具**。平台侧无需配置 LLM(AQUANT_LLM_*),direct 模式(默认)
+也无需启动 REST 服务 —— 工具进程内直调,与 Web 端同一套四层校验与保守参数。
 
-## 0. 前置检查(每次会话开始,顺序执行)
+## 0. 前置检查(每次会话开始)
 
-1. `platform_workflow_guide()` — 读取平台官方七步工作流与工具契约;若与本文件有出入,以工具返回为准。
-2. `platform_health()` — 确认后端可用(返回 status/version)。失败时按返回文本处置:连接失败 → 请用户启动 API;401 → 请用户检查 AQUANT_MCP_TOKEN。前置检查未通过不得进入后续步骤。
+1. `platform_workflow_guide()` — 读官方工作流;若与本文件有出入,以工具返回为准。
+2. `platform_health()` — 确认服务可用(direct 模式恒可用;proxy 模式失败时按返回
+   文本处置:连接失败 → 请用户启动 API 或改用 direct 模式;401 → 检查 token)。
 
-## 1. 七步工作流
+## 1. 工作流
 
 ### 第 1 步:初始化项目目录
 
@@ -20,21 +23,23 @@ description: 当用户要求编写/回测/优化/验证 A 股量化策略,或提
 
 ```
 ~/aquant-project/
-├── strategies/   # 策略 .py,命名 <策略名>_<标的代码>.py,如 ma_cross_000001.py
-└── reports/      # 报告 JSON/MD,文件名带日期,如 2026-11-15_ma_cross_000001_backtest.md
+├── strategies/   # 策略 .py,命名 <策略名>_<标的代码>.py,如 ma_cross_600519.py
+└── reports/      # 报告 MD,文件名带日期,如 2026-11-21_ma_cross_600519_backtest.md
 ```
 
-目录不存在则用文件工具创建(若项目带 README 说明,先读并遵循);每完成一个阶段,把结果落盘 reports/。
+### 第 2 步:读契约与标的池(写码前必做)
 
-### 第 2 步:编写策略代码(RQAlpha 6.5.0 日线)
+- `platform_strategy_contract()` — 代码契约(入口函数 / history_bars 一维数组语义 /
+  下单规范 / 禁令清单)+ 参考骨架 + 当前标的池;
+- `platform_list_instruments()` — 标的池(oid/名称)、可用基准、数据区间;
+  标的与回测日期都从这里选;区间超出数据范围时平台会自动拉取最新行情(首次约 30~90s)。
 
-约束清单(违反即被校验 422 拦截):
+### 第 3 步:编写策略代码
 
-- 骨架:`init(context)` + `handle_bar(context, bar_dict)`;标的用 order_book_id(深交所 `.XSHE`、上交所 `.XSHG`,如 `000001.XSHE`);
-- `history_bars(...)` 返回 **ndarray**:直接切片/`.mean()` 运算,**不要当 DataFrame 用**(实测高频误用点);
-- 持仓查询必须带方向:`context.portfolio.get_position(code, POSITION_DIRECTION.LONG)`,需 `from rqalpha.const import POSITION_DIRECTION`;
-- 信号只用截至当前 bar 的数据:禁未来函数 `shift(-n)`、禁墙钟 `datetime.now()`、禁 requests/akshare 等策略内拉外部数据、禁 `before_trading` 引用当日行情、禁全局 `fit()` 过拟合模式;
-- 不得配置激进参数(零滑点/关闭 T+1/费率<1)——平台强制保守默认(0.2% 滑点、万八佣金+千一印花税、T+1、成交量占比 ≤20%),只能给更保守的覆盖。
+按契约把用户需求写成完整策略,存入 strategies/(文件内容与后续工具调用保持一致)。
+要点(详见契约返回):只含 `init` + `handle_bar`;`history_bars` 单字段返回一维数组
+直接切片运算;只在 handle_bar 下单、仓位 ≤0.95、先查持仓;禁未来函数/墙钟时间/
+外部数据/顶层 fit();只 import numpy/pandas/POSITION_DIRECTION。
 
 合规骨架(可直接作为起点,存为 `strategies/ma_cross_<代码>.py`):
 
@@ -43,7 +48,7 @@ from rqalpha.const import POSITION_DIRECTION
 
 
 def init(context):
-    context.s1 = "000001.XSHE"
+    context.s1 = "600519.XSHG"
     context.fast = 5
     context.slow = 20
 
@@ -61,80 +66,83 @@ def handle_bar(context, bar_dict):
         order_target_percent(context.s1, 0.0)
 ```
 
-### 第 3 步:校验到 0 error
+### 第 4 步:校验到 0 error
 
-`platform_validate_code(code=<策略源码>, start=?, end=?)` → `{passed, error_count, warning_count, findings, summary}`(start/end 可选,提供后做含回测配置的完整校验)。
+`platform_validate_code(code, start=?, end=?)` → `{passed, findings, summary}`。
 
-- `error_count` 必须为 0 才能回测;HTTP 422 或 `passed=false` 时,逐条按 `findings[].rule` 修改策略文件后重新调用(常见:shift(-1) 未来函数、T+1 违规、零滑点配置);
+- `error_count` 必须为 0 才能回测;`passed=false` 时逐条按 `findings[].rule` 修改
+  文件后重试(高频问题:shift(-1) 未来函数、一维 ndarray 按字段名取列、T+1 违规);
 - warning 不拦截,但须向用户转述。
 
-### 第 4 步:回测并读指标诊断
+### 第 5 步:回测并汇报
 
-`platform_run_backtest(code, start, end, cash=?)` → `{passed, verdict, metrics, trades_count}`,start/end 必填(YYYY-MM-DD)。
+`platform_run_backtest(code, start, end, cash=?, benchmark=?)` → JSON + **人读
+Markdown 报告**(可直接引用汇报)。benchmark:000001.XSHG 上证指数 / 000300.XSHG
+沪深300 / bundle 内任意标的 / 'none' 关闭,缺省上证指数。
 
-metrics 关键字段:`total_returns` / `annualized_returns` / `benchmark_total_returns` / `sharpe` / `max_drawdown` / `volatility` / `alpha` / `beta` / `turnover` / `win_rate` / `total_commission` / `total_tax` / `trading_days` / `unsafe`。
+- 返回含 metrics、portfolio_series(净值摘要)、benchmark_series、trades、
+  benchmark_label;报告含基准对比、最大回撤区间、成本与提示;
+- 执行崩溃(execution_error):把错误原文带回上下文修码重试(典型:一维 ndarray
+  按字段名取列、标的当日停牌);
+- metrics 关键字段:`total_returns` / `annualized_returns` / `benchmark_total_returns` /
+  `sharpe` / `max_drawdown` / `turnover` / `win_rate` / `total_commission` / `total_tax`。
 
-- 422 = 回测前硬门禁再拦:回到第 3 步修 findings;
-- 400 = bundle 缺失或参数问题:按返回的构建指引处理;
-- 回测前后可用 `platform_get_kline(oid, start, end)` 观察量价形态、确认标的在数据 bundle 内(start/end 必填;oid 不在 bundle → 400)。
+### 第 6 步:诊断迭代(你当优化大脑)
 
-逐项诊断(五类症状 → 处理方向):
+`platform_diagnose_strategy(code, start, end, benchmark=?)` — 回测 + 规则诊断
+(无成交 / 换手过高 / 成本侵蚀 / 回撤偏大 / 胜率偏低)。
 
-| 症状 | 判断 | 处理方向 |
-|---|---|---|
-| `trades_count = 0` | 信号从未触发 | 放宽阈值/换标的或区间(用 platform_get_kline 核实行情)/换逻辑 |
-| `turnover` 过高 | 频繁换仓,成本侵蚀 | 加趋势过滤、降低调仓频率 |
-| `total_commission + total_tax` 占收益比例大 | 成本主导 | 降频、提高单次调仓幅度 |
-| `max_drawdown` 偏大 | 缺风控 | 加止损、降低仓位上限 |
-| `win_rate` 低 | 信号质量差 | 信号过滤、调整出场逻辑 |
+| 线索 | 处理方向 |
+|---|---|
+| 无成交 | 放宽阈值 / 换标的或区间(先 platform_get_kline 核实行情)/ 换逻辑 |
+| 换手过高 | 加趋势过滤、降低调仓频率 |
+| 成本占比大 | 降频、提高单次调仓幅度 |
+| 回撤偏大 | 加止损、降低仓位上限 |
+| 胜率偏低 | 信号过滤、调整出场逻辑 |
 
-诊断结论落盘 reports/,再与用户确认是否优化。
+迭代循环:**你改码 → 第 4 步校验 → 第 5 步复测 → 把每轮指标变化告诉用户**。
+(可选)平台侧 AI 优化 `platform_optimize` 需要配置平台 LLM;未配置时返回 503 指引,
+走本步自主循环即可。
 
-### 第 5 步:AI 优化(推荐)
+### 第 7 步:对比排名与防过拟合(交付前必做)
 
-`platform_optimize(code, start, end, rounds=2, cash=?, overrides=?)` → `{improved, best: {code, summary}, baseline, rounds, elapsed_seconds}`;rounds 取值 1~5,默认 2,连续 2 轮无改进自动早停。
+- 多候选:`platform_rank_strategies(candidates=[{"name", "metrics"}…])` 按
+  (夏普, 年化, -回撤)排名;竞技场 `platform_arena` 可让多份完整代码同场回测;
+- 防过拟合:`platform_verify_layered(code, start, end, is_ratio=0.7)` — IS→OOS 对照 +
+  随机基准;**回测好看 ≠ 策略可用**,交付前必做;`status=fail` 时回第 6 步继续,
+  通过后如实报告,不得粉饰;`paper_checklist`(模拟盘清单)必须原样转告用户;
+- 会话工具(可选):`platform_session_create` + `platform_session_edit_code` +
+  `platform_session_backtest` + `platform_session_rollback` / `platform_session_diff`
+  做版本化管理(direct 下可用,不依赖平台 LLM)。
 
-- **耗时数分钟**(每轮 = 1 次 LLM 生成 + 2 次回测),调用前告知用户,期间勿中断重试(工具读超时已放宽);
-- 依赖平台侧已配置 `AQUANT_LLM_*`;未配置时为模板兜底,优化无实际意义;
-- `improved=true`:**用文件工具把 `best.code` 回写策略文件**,再回第 4 步复测确认;
-- `improved=false`:无改进,保留原代码并如实告知用户。
+### 第 8 步:汇报与归档
 
-### 第 6 步:分层验证(防过拟合,必做)
-
-`platform_verify_layered(code, start, end, is_ratio=0.7, overrides=?)` → `{status: pass|warning|fail, comparison, is_metrics, oos_metrics, checks, report, paper_checklist, ...}`。
-
-- **回测好看 ≠ 策略可用**:IS→OOS 对比 + 随机基准对照是唯一防过拟合闸门,交付前必做(优化产出的 best.code 也要再验一次);
-- start/end 跨度须 ≥ 40 个交易日(建议取比第 4 步更长的区间);is_ratio 限 0.5~0.9;
-- `status=fail`(OOS 收益为负/回撤放大/夏普腰斩)→ 回第 4/5 步继续优化,通过后如实报告,不得粉饰;
-- `paper_checklist`(模拟盘引导清单)必须原样转告用户:回测通过 ≠ 可以实盘。
-
-### 第 7 步:竞技与归档
-
-多策略对比:`platform_arena(candidates=[{"name": "MA金叉", "code": "..."}, ...](1~6 个), start, end)` → 按 (年化, 夏普) 降序排名;校验不过的候选自动 rejected、执行失败只淘汰自己;候选名必须唯一。提交前先用 `platform_validate_code` 预检各候选可提高入围率;冠军代码建议再做第 6 步防过拟合。
-
-归档:最终采用的代码确保在 strategies/;把校验/回测/优化/验证/竞技场结果整理落盘 reports/(文件名带日期与阶段),并向用户汇报最终结论。
+把 report_md 与关键指标用你自己的口吻整理给用户:策略思路、总收益与相对基准超额、
+最大回撤区间、成本、诊断与迭代过程、验证结论、下一步建议。结果落盘 reports/
+(文件名带日期与阶段);最终代码确保在 strategies/。
 
 ## 2. 错误处理
 
+所有工具失败都返回**可读中文文本**(不抛堆栈),按文本自纠后重试:
+
 | 返回 | 含义 | 动作 |
 |---|---|---|
-| HTTP 422 + findings/verdict | Layer 1/3 校验拦截 | 逐条修 findings 后重试;**不得绕过** |
-| HTTP 400 + bundle 构建指引 | 数据 bundle 缺失 | 按指引构建 bundle 或设 AQUANT_BUNDLE_PATH;需用户操作时明确告知 |
-| HTTP 400 + 其他中文提示 | 参数问题(区间<40 交易日、oid 不在 bundle、候选名重复等) | 按提示改参数重试 |
-| HTTP 401 | token 无效/缺失 | 请用户检查 AQUANT_MCP_TOKEN |
-| HTTP 403 | scope 不足(readonly token 调了写接口) | 请用户改用 readwrite token |
-| HTTP 429 | 触发限流 | 等待后重试,并降低调用频率 |
-| HTTP 502 | 平台侧 LLM 服务不可用 | 稍后重试;请用户检查平台 AQUANT_LLM_* 配置 |
-| HTTP 500 | 服务端回测执行失败 | 重试一次;仍失败请用户查服务端日志 |
-| 「无法连接量化平台 API」文本 | 后端未启动或地址不对 | 请用户启动 API(如 `uvicorn aquant.api.main:app --port 8000`)或核对 AQUANT_API_BASE |
-
-工具返回错误均为可读中文文本,不抛堆栈——按文本自纠后重试,不要向用户原样转发堆栈。
+| 422 + findings/verdict | Layer 1/3 校验拦截 | 逐条修 findings 后重试;**不得绕过** |
+| 422 + execution_error | 静态校验通过但撮合崩溃 | 按错误原文修码(高频:一维 ndarray 取列) |
+| 422 + "回测区间 … 无行情数据" | 区间越界(正常会被自动扩展兜底) | 若出现,说明自动扩展被关闭/超限,调整日期或手动重建 bundle |
+| 400 + bundle 构建指引 | 数据 bundle 缺失 | 按指引构建或设 AQUANT_BUNDLE_PATH |
+| 400 + 基准不在 bundle | benchmark oid 非法 | 改用 000001.XSHG/000300.XSHG 或池内标的 |
+| 401/403/429 | token 无效 / scope 不足 / 限流 | 请用户检查 token 配置;降频重试 |
+| 503 + 自主闭环指引 | 平台未配置 LLM 而调了 chat/turn/optimize | 改用本文件的自主闭环工具链 |
+| 「无法连接量化平台 API」 | proxy 模式且后端未启动 | 启动服务或切回 direct 模式 |
 
 ## 3. 纪律
 
-1. **不绕过校验**:校验是平台正确性的核心;不尝试禁用校验、不使用 `AQUANT_ALLOW_UNSAFE` 豁免。
-2. **不承诺收益**:回测仅供学习研究、不构成投资建议;对 verify=fail、零成交等坏结果如实呈现。
-3. **报告落盘 reports/**:文件名带日期与阶段(如 `2026-11-15_ma_cross_000001_verify.md`);verify 报告必须包含 paper_checklist 与免责声明。
-4. **文件与回测一致**:所有代码改动先写入 strategies/ 下文件,再以文件内容调用工具;optimize 采纳的 best.code 必须回写文件。
+1. **不绕过校验**:不尝试禁用校验、不使用 `AQUANT_ALLOW_UNSAFE` 豁免。
+2. **不承诺收益**:回测仅供学习研究、不构成投资建议;verify=fail、零成交等坏结果如实呈现。
+3. **报告落盘 reports/**:文件名带日期与阶段;verify 报告必须包含 paper_checklist 与免责声明。
+4. **文件与回测一致**:所有代码改动先写入 strategies/ 文件,再以文件内容调用工具。
+5. **诚实汇报**:把每轮回测结果(含变差)告诉用户;采纳与否由用户决定。
 
-> 注:工具名与参数已与 MCP server(src/aquant/mcp_server/server.py)的注册一致;若客户端实际暴露的工具签名与本文件不符,以实际为准。
+> 注:工具名与参数已与 MCP server(src/aquant/mcp_server/server.py)注册一致;
+> direct 模式的端点语义在 src/aquant/mcp_server/service.py;若实际签名不符,以工具返回为准。
