@@ -241,6 +241,28 @@ def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
         return JSONResponse(status_code=502, content={"detail": "LLM 服务暂时不可用,请稍后重试。", "reason": str(exc)})
 
 
+
+def _execution_error_detail(exec_error: Any) -> str:
+    """运行时崩溃 → 面向用户的可读 detail(附带原始错误末行,外部 agent 可据此自纠)。"""
+    import re
+
+    raw = str(exec_error)
+    m = re.search(r"There is no data between ([\d-]+) and ([\d-]+)", raw)
+    if m:
+        return (
+            f"回测区间 {m.group(1)} ~ {m.group(2)} 在当前数据 bundle 中无行情数据"
+            "(bundle 数据区间见编写指南或构建日志),请把起止日期调整到数据范围内后重试。"
+        )
+    tail = raw.strip().splitlines()[-1] if raw.strip() else ""
+    return (
+        "策略通过静态校验,但回测执行阶段崩溃。"
+        "常见原因:history_bars 单字段请求(如 fields='close')返回一维 ndarray,"
+        "直接参与运算即可,不要再按字段名取列(多字段请求才返回结构化数组);"
+        "下单前判断数组长度;检查标的当日是否停牌。"
+        + (f"原始错误:{tail[:160]}" if tail else "")
+    )
+
+
 @app.post("/api/backtest", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
 def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
     """直接回测已就绪的策略代码:Layer 1 校验是硬门禁,不过即 422;bundle 缺失 400。
@@ -291,15 +313,11 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
     # 否则 metrics=null 而外部 agent 无从得知原因。
     exec_error = result.get("execution_error") if isinstance(result, dict) else getattr(result, "execution_error", None)
     if exec_error:
+        detail = _execution_error_detail(exec_error)
         return JSONResponse(
             status_code=422,
             content={
-                "detail": (
-                    "策略通过静态校验,但回测执行阶段崩溃。"
-                    "常见原因:history_bars 单字段请求(如 fields='close')返回一维 ndarray,"
-                    "直接参与运算即可,不要再按字段名取列(多字段请求才返回结构化数组);"
-                    "下单前判断数组长度;检查标的当日是否停牌。"
-                ),
+                "detail": detail,
                 "execution_error": str(exec_error)[-2000:],
             },
         )

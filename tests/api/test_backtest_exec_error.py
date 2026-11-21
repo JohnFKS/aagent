@@ -64,7 +64,38 @@ def test_execution_error_surfaced_as_422_with_hint():
     d = resp.json()
     assert "回测执行阶段崩溃" in d["detail"]
     assert "一维 ndarray" in d["detail"]          # 修复指引在案
+    assert "line 29 in handle_bar" in d["detail"]  # 原始错误末行随 detail 透出
     assert "IndexError" in d["execution_error"]   # 原始错误可读
+
+
+def test_no_data_error_mapped_to_readable_range_hint():
+    """区间越界(rqalpha There is no data)→ 给出调整日期的具体指引而非通用崩溃文案。"""
+
+    class _NoDataRunner:
+        name = "no_data_stub"
+
+        def run(self, code, start, end, **kw):
+            return {
+                "summary": None,
+                "portfolio": None,
+                "trades": [],
+                "verdict": None,
+                "unsafe": False,
+                "execution_error": (
+                    "回测执行失败(exit=1):\n"
+                    "rqalpha.utils.exception.CustomException: There is no data between "
+                    "2025-01-01 and 2025-06-30. Please check your data bundle."
+                ),
+            }
+
+    client = _client_with(_NoDataRunner())
+    resp = client.post("/api/backtest", json={
+        "code": GOOD_ENOUGH_CODE, "start": "2025-01-01", "end": "2025-06-30",
+    })
+    assert resp.status_code == 422
+    d = resp.json()
+    assert "回测区间 2025-01-01 ~ 2025-06-30" in d["detail"]
+    assert "无行情数据" in d["detail"]
 
 
 def test_normal_run_has_no_execution_error_key():
