@@ -324,6 +324,7 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
     # 净值序列(策略 vs 基准)+ 成交明细(图上买卖标记):非关键路径,失败降级空值
     from aquant.agents.orchestrator import (
         _extract_benchmark_series,
+        _extract_daily_holdings,
         _extract_portfolio_series,
         _extract_run_log,
         _extract_trades,
@@ -339,7 +340,7 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
         "trades": _extract_trades(result),
         # /api/backtest 面向回测页(日志面板可回看全量),上限放宽到 2000 行
         "run_log": _extract_run_log(result, max_lines=2000),
-        "strategy_prints": (result.get("strategy_prints") or [])[-80:]
+        "daily_holdings": _extract_daily_holdings(result, max_days=1000)
         if isinstance(result, dict) else [],
         "bundle_extension": result.get("bundle_extension") if isinstance(result, dict) else None,
         "benchmark": benchmark,
@@ -755,6 +756,7 @@ def _backtest_version(
     """
     from aquant.agents.orchestrator import (
         _extract_benchmark_series,
+        _extract_daily_holdings,
         _extract_metrics,
         _extract_portfolio_series,
         _extract_run_log,
@@ -803,6 +805,7 @@ def _backtest_version(
                 "benchmark_series": benchmark_series,
                 "trades": _extract_trades(outcome["result"]),
                 "run_log": _extract_run_log(outcome["result"]),
+                "daily_holdings": _extract_daily_holdings(outcome["result"]),
                 "metrics": metrics,
             },
         )
@@ -812,6 +815,7 @@ def _backtest_version(
         "benchmark_series": benchmark_series,
         "trades": _extract_trades(outcome["result"]),
         "run_log": _extract_run_log(outcome["result"]),
+        "daily_holdings": _extract_daily_holdings(outcome["result"]),
         "bundle_extension": outcome["result"].get("bundle_extension")
         if isinstance(outcome["result"], dict) else None,
         "benchmark": benchmark,
@@ -925,6 +929,7 @@ def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[st
                 "benchmark_series": outcome.get("benchmark_series"),
                 "trades": outcome.get("trades"),
                 "run_log": outcome.get("run_log"),
+                "daily_holdings": outcome.get("daily_holdings"),
                 "benchmark": outcome.get("benchmark"),
                 "benchmark_label": outcome.get("benchmark_label"),
                 "report": outcome.get("report"),

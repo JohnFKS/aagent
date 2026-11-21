@@ -199,6 +199,7 @@ def run_conversation(
         "trades": trades_list,
         "bundle_extension": _extract_bundle_extension(result_obj),
         "run_log": _extract_run_log(result_obj),
+        "daily_holdings": _extract_daily_holdings(result_obj),
         "review": merged,
         "report": report,
         "error": None,
@@ -410,6 +411,13 @@ def _extract_run_log(result: Any, max_lines: int = 300) -> dict[str, Any]:
         "truncated": bool(truncated or len(run_log) > max_lines),
         "strategy_prints": prints[-80:],
     }
+
+
+def _extract_daily_holdings(result: Any, max_days: int = 500) -> list[dict[str, Any]]:
+    """提取结构化每日持仓&收益(逐日持仓/可用/收盘价/市值/盈亏 + 现金/总资产)。"""
+    dh = result.get("daily_holdings") if isinstance(result, dict) \
+        else getattr(result, "daily_holdings", None)
+    return list(dh or [])[-max_days:]
 
 
 def _extract_bundle_extension(result: Any) -> dict[str, Any] | None:

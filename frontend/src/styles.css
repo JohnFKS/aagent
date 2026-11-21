@@ -4204,22 +4204,30 @@ body.chart-resizing {
 .td-wrap[open] .td-summary::before { transform: rotate(90deg); }
 .td-summary:hover { color: var(--text); }
 .td-meta { font-size: 11px; color: var(--text-faint); font-weight: 400; }
-.td-scroll { overflow: auto; border-top: 1px solid var(--border-soft); }
+.td-scroll {
+  overflow: auto;
+  max-height: 420px;          /* 数据多时表格内部滚动(非整页滚动) */
+  border-top: 1px solid var(--border-soft);
+}
 .td-table {
   width: 100%;
-  border-collapse: collapse;
+  /* sticky 表头在 Chrome 下与 border-collapse: collapse 互斥,必须 separate */
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 11.5px;
 }
 .td-table th {
   text-align: left;
   padding: 7px 10px;
-  background: var(--panel);
+  background: var(--panel);   /* 不透明底色,滚动时遮住下层行 */
   color: var(--text-faint);
   font-weight: 600;
-  border-bottom: 1px solid var(--border-soft);
   white-space: nowrap;
-  position: sticky;
+  position: sticky;           /* 表头悬浮:滚动到任何位置列名都可见 */
   top: 0;
+  z-index: 2;
+  border-bottom: 1px solid var(--border-soft);
+  box-shadow: 0 1px 0 var(--border-soft); /* 滚动中底边不被行覆盖 */
 }
 .td-table td {
   padding: 6px 10px;
@@ -4233,3 +4241,100 @@ body.chart-resizing {
 .td-table .td-name { color: var(--text-faint); margin-left: 4px; }
 .td-buy .td-side { color: var(--up); font-weight: 600; }
 .td-sell .td-side { color: var(--down); font-weight: 600; }
+
+/* ---------- 每日持仓&收益面板(DailyHoldingsPanel,聚宽同构) ---------- */
+.dh-wrap {
+  margin: 10px 0 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  overflow: hidden;
+}
+.dh-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 13px;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  user-select: none;
+  list-style: none;
+}
+.dh-summary::-webkit-details-marker { display: none; }
+.dh-summary::before { content: '▸'; color: var(--text-faint); transition: transform .15s ease; }
+.dh-wrap[open] .dh-summary::before { transform: rotate(90deg); }
+.dh-summary:hover { color: var(--text); }
+.dh-meta { font-size: 11px; color: var(--text-faint); font-weight: 400; }
+.dh-collapsed-hint { padding: 0 13px 9px; font-size: 11px; color: var(--text-faint); }
+
+.dh-day { padding: 4px 13px 10px; border-bottom: 1px dashed var(--border-soft); }
+.dh-day:last-child { border-bottom: none; }
+.dh-date {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 600;
+}
+.dh-daypnl { color: var(--text-dim); font-weight: 400; }
+.dh-dayret { color: var(--text-dim); font-weight: 400; }
+.pnl-up { color: var(--up) !important; }
+.pnl-down { color: var(--down) !important; }
+
+/* 表格内部滚动 + 表头悬浮(与成交明细同一套方案) */
+.dh-scroll {
+  overflow: auto;
+  max-height: 300px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+.dh-table {
+  width: 100%;
+  border-collapse: separate; /* sticky 表头必须 separate */
+  border-spacing: 0;
+  font-size: 11.5px;
+}
+.dh-table th {
+  text-align: left;
+  padding: 7px 10px;
+  background: var(--panel);
+  color: var(--text-faint);
+  font-weight: 600;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: 1px solid var(--border-soft);
+  box-shadow: 0 1px 0 var(--border-soft);
+}
+.dh-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.dh-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.dh-table .dh-name { color: var(--text); }
+.dh-table .dh-cash td { background: rgba(255, 255, 255, 0.02); color: var(--text-faint); }
+.dh-table .dh-total td {
+  background: rgba(58, 162, 255, 0.06);
+  color: var(--text);
+  font-weight: 600;
+  border-bottom: none;
+}
+.dh-more {
+  display: block;
+  margin: 8px auto 10px;
+  padding: 5px 14px;
+  font-size: 12px;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid rgba(58, 162, 255, 0.4);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.dh-more:hover { background: var(--accent-soft); }

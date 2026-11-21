@@ -177,6 +177,7 @@ def _h_backtest(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     from aquant.agents.orchestrator import (
         _extract_benchmark_series,
+        _extract_daily_holdings,
         _extract_portfolio_series,
         _extract_run_log,
         _extract_trades,
@@ -195,6 +196,7 @@ def _h_backtest(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         "benchmark_series": _extract_benchmark_series(result),
         "trades": _extract_trades(result),
         "run_log": _extract_run_log(result),
+        "daily_holdings": _extract_daily_holdings(result),
         "bundle_extension": result.get("bundle_extension") if isinstance(result, dict) else None,
         "benchmark": benchmark,
         "benchmark_label": _benchmark_label(benchmark),

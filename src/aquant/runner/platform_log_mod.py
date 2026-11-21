@@ -44,6 +44,8 @@ class PlatformLogMod(AbstractMod):
         self._lines: list[str] = []
         self._env = None
         self._log_file = ""
+        self._holdings_file = ""
+        self._daily_holdings: list[dict] = []
         self._prev_total: float | None = None
         self._init_done = False
 
@@ -51,6 +53,7 @@ class PlatformLogMod(AbstractMod):
     def start_up(self, env, mod_config) -> None:
         self._env = env
         self._log_file = getattr(mod_config, "log_file", "")
+        self._holdings_file = getattr(mod_config, "holdings_file", "")
         bus = env.event_bus
         for event_type, handler in (
             (EVENT.POST_SYSTEM_INIT, self._on_post_system_init),
@@ -81,37 +84,66 @@ class PlatformLogMod(AbstractMod):
         self._lines.append(f"{_ts(self._env)} - INFO  - " + "=" * 60)
 
     def _flush(self) -> None:
-        if not self._log_file:
-            return
-        try:
-            with open(self._log_file, "w", encoding="utf-8") as f:
-                f.write("\n".join(self._lines))
-        except OSError:
-            pass  # 日志落盘失败不阻塞回测(哨兵行仍带内存缓冲由 worker 兜底)
+        if self._log_file:
+            try:
+                with open(self._log_file, "w", encoding="utf-8") as f:
+                    f.write("\n".join(self._lines))
+            except OSError:
+                pass  # 日志落盘失败不阻塞回测(哨兵行仍带内存缓冲由 worker 兜底)
+        if self._holdings_file:
+            try:
+                import json as _json
+
+                with open(self._holdings_file, "w", encoding="utf-8") as f:
+                    _json.dump(self._daily_holdings, f, ensure_ascii=False)
+            except OSError:
+                pass
 
     # ---- 持仓快照 --------------------------------------------------------
     def _positions_snapshot(self) -> tuple[list[str], float]:
-        """持仓明细行 + 市值合计。"""
-        env = self._env
-        portfolio = env.portfolio
+        """持仓明细行(文本日志用)+ 市值合计。"""
         rows: list[str] = []
         market_value = 0.0
         try:
-            for oid, pos in dict(portfolio.positions).items():
-                if pos.quantity == 0:
-                    continue
-                market_value += float(pos.market_value)
-                inst = self._env.get_instrument(oid)
-                name = inst.symbol if inst else oid
-                pnl_pct = (pos.last_price / pos.avg_price - 1) * 100 if pos.avg_price else 0.0
+            for row in self._positions_structured():
+                market_value += row["market_value"]
+                pnl_pct = (row["close"] / row["avg_price"] - 1) * 100 if row["avg_price"] else 0.0
                 rows.append(
-                    f"  {oid}({name}) {pos.quantity:g}股 成本 {pos.avg_price:,.3f} "
-                    f"现价 {pos.last_price:,.3f} 市值 {_money(pos.market_value)} "
+                    f"  {row['oid']}({row['name']}) {row['quantity']:g}股 成本 {row['avg_price']:,.3f} "
+                    f"现价 {row['close']:,.3f} 市值 {_money(row['market_value'])} "
                     f"浮盈 {pnl_pct:+.2f}%"
                 )
         except Exception as exc:  # noqa: BLE001 - 持仓快照异常不影响回测
             rows.append(f"  (持仓快照异常:{type(exc).__name__}: {exc})")
         return rows, market_value
+
+    def _positions_structured(self) -> list[dict]:
+        """结构化持仓快照(每日持仓&收益模块数据源)。"""
+        out: list[dict] = []
+        portfolio = self._env.portfolio
+        for oid, pos in dict(portfolio.positions).items():
+            if pos.quantity == 0:
+                continue
+            inst = self._env.get_instrument(oid)
+            name = inst.symbol if inst else oid
+            # 可用数量:T+1 下今日买入不可卖 → 可用 = min(未挂平单量, 昨仓)
+            try:
+                old_q = int(getattr(pos, "_old_quantity", pos.quantity))
+                available = max(0, min(int(pos.closable), old_q))
+            except Exception:
+                available = int(pos.quantity)
+            out.append({
+                "oid": oid,
+                "name": name,
+                "direction": "多",
+                "quantity": int(pos.quantity),
+                "available": available,
+                "close": float(pos.last_price),
+                "market_value": float(pos.market_value),
+                "pnl": float(pos.pnl),
+                "avg_price": float(pos.avg_price),
+            })
+        return out
 
     # ---- 事件处理(每个 handler 套安全壳:日志层异常绝不影响回测)----------
     def _safe(self, handler, event) -> None:
@@ -195,6 +227,20 @@ class PlatformLogMod(AbstractMod):
         if rows:
             self._lines.extend(rows)
         self._prev_total = total
+        # 结构化每日持仓&收益(前端面板数据源)
+        try:
+            self._daily_holdings.append({
+                "date": f"{env.trading_dt:%Y-%m-%d}",
+                "positions": self._positions_structured(),
+                "cash": cash,
+                "total_value": total,
+                "market_value": market_value,
+                "daily_pnl": float(portfolio.daily_pnl),
+                "daily_returns": float(portfolio.daily_returns),
+                "total_returns": float(portfolio.total_returns),
+            })
+        except Exception as exc:  # noqa: BLE001
+            self._warn(f"(每日持仓快照异常:{type(exc).__name__}: {exc})")
         self._flush()  # 每日增量落盘,中断也不丢
 
 

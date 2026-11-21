@@ -65,6 +65,7 @@ class RealRunnerAdapter:
                 "bundle_extension": extension,
                 "run_log": [],
                 "strategy_prints": [],
+                "daily_holdings": [],
             }
         return {
             "summary": key_metrics(result),
@@ -76,4 +77,5 @@ class RealRunnerAdapter:
             "bundle_extension": extension,
             "run_log": result.run_log,
             "strategy_prints": result.strategy_prints,
+            "daily_holdings": result.daily_holdings,
         }

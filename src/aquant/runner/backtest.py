@@ -69,6 +69,8 @@ class BacktestResult:
     run_log: list[str] = field(default_factory=list)
     strategy_prints: list[str] = field(default_factory=list)
     run_log_truncated: bool = False
+    # 结构化每日持仓&收益(每日持仓/可用/收盘价/市值/盈亏 + 现金/总资产/当日盈亏)
+    daily_holdings: list[dict] = field(default_factory=list)
 
 
 def run_backtest(
@@ -118,12 +120,15 @@ def run_backtest(
         result_file = tmp_dir / "result.pkl"
         config["mod"]["sys_analyser"]["output_file"] = str(result_file)
 
-        # 平台日志 mod(聚宽式逐日日志):写入临时文件,worker 收尾经哨兵行回传
+        # 平台日志 mod(聚宽式逐日日志 + 结构化每日持仓):写入临时文件,
+        # worker 收尾经哨兵行回传主进程
         log_file = tmp_dir / "run_log.txt"
+        holdings_file = tmp_dir / "daily_holdings.json"
         config.setdefault("mod", {})["platform_log"] = {
             "enabled": True,
             "lib": "aquant.runner.platform_log_mod",
             "log_file": str(log_file),
+            "holdings_file": str(holdings_file),
         }
         cfg_file = tmp_dir / "config.json"
         cfg_file.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
@@ -141,21 +146,21 @@ def run_backtest(
         with open(result_file, "rb") as f:
             raw = pickle.load(f)
 
-        # 解析 worker 哨兵行(运行日志 + 策略 print;哨兵缺失/损坏时静默降级)
-        run_log: list[str] = []
-        strategy_prints: list[str] = []
+        daily_holdings = []
         for line in (proc.stdout or "").splitlines():
             if line.startswith(_worker.RUN_META_SENTINEL):
                 try:
                     meta = json.loads(line[len(_worker.RUN_META_SENTINEL):])
                     run_log = meta.get("run_log") or []
                     strategy_prints = meta.get("strategy_prints") or []
+                    daily_holdings = meta.get("daily_holdings") or []
                 except Exception:
                     pass
                 break
         run_log_truncated = len(run_log) > 2000 or len(strategy_prints) > 500
         run_log = run_log[-2000:]
         strategy_prints = strategy_prints[-500:]
+        daily_holdings = daily_holdings[-1000:]
 
     summary = dict(raw.get("summary", {}))
     portfolio = _normalize_portfolio(raw.get("portfolio"))
@@ -193,6 +198,7 @@ def run_backtest(
         run_log=run_log,
         strategy_prints=strategy_prints,
         run_log_truncated=run_log_truncated,
+        daily_holdings=daily_holdings,
     )
 
 

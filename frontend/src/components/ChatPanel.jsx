@@ -12,6 +12,7 @@ import NetValueChart from './NetValueChart.jsx';
 import MonthlyReturnsTable from './MonthlyReturnsTable.jsx';
 import RunLogPanel from './RunLogPanel.jsx';
 import TradesTable from './TradesTable.jsx';
+import DailyHoldingsPanel from './DailyHoldingsPanel.jsx';
 import KlineChart from './KlineChart.jsx';
 import FindingsList from './FindingsList.jsx';
 import CodeBlock from './CodeBlock.jsx';
@@ -270,6 +271,7 @@ export default function ChatPanel({ notify, onSeedValidate, onSeedStudio }) {
           <MonthlyReturnsTable series={result.portfolio_series} />
           <MetricsCards metrics={result.metrics} />
           <TradesTable trades={result.trades} />
+          <DailyHoldingsPanel dailyHoldings={result.daily_holdings} />
           <RunLogPanel runLog={result.run_log} />
 
           {/* K 线(标的行情):默认折叠;展开后自动从生成代码推断标的拉取蜡烛图,

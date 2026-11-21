@@ -23,6 +23,14 @@ def _ok_runner():
                 ["2023-01-03", "2023-01-04", "2023-01-05"]))
             portfolio = pd.DataFrame(
                 {"total_value": [1_000_000.0, 1_010_000.0, 1_020_000.0]}, index=idx)
+            self.daily_holdings = [{
+                "date": "2023-01-04",
+                "positions": [{"oid": "000001.XSHE", "name": "平安银行", "direction": "多",
+                               "quantity": 65300, "available": 65300, "close": 13.0,
+                               "market_value": 848900.0, "pnl": -100.0, "avg_price": 13.002}],
+                "cash": 151100.0, "total_value": 1000000.0,
+                "daily_pnl": -100.0, "daily_returns": -0.0001, "total_returns": 0.0,
+            }]
             # 与真实 runner 同语义:配置了基准才输出 benchmark_portfolio
             bm = pd.DataFrame({"unit_net_value": [1.0, 1.005, 0.998]}, index=idx) \
                 if kw.get("benchmark") else pd.DataFrame()
@@ -40,6 +48,7 @@ def _ok_runner():
                 "trades": trades,
                 "verdict": None,
                 "unsafe": False,
+                "daily_holdings": self.daily_holdings,
             }
 
     return _OkRunner()
@@ -136,6 +145,15 @@ def test_backtest_trades_detail_and_unknown_benchmark_400(client):
         {"date": "2023-01-04 15:00", "order_book_id": "", "symbol": "", "side": "SELL",
          "price": 14.2, "quantity": 65300.0, "amount": 927260.0, "commission": 0.0, "tax": 0.0},
     ]
+    # 每日持仓&收益(结构化):日期分组 + 持仓行 + 现金/总资产/当日盈亏
+    assert d["daily_holdings"] == [{
+        "date": "2023-01-04",
+        "positions": [{"oid": "000001.XSHE", "name": "平安银行", "direction": "多",
+                       "quantity": 65300, "available": 65300, "close": 13.0,
+                       "market_value": 848900.0, "pnl": -100.0, "avg_price": 13.002}],
+        "cash": 151100.0, "total_value": 1000000.0,
+        "daily_pnl": -100.0, "daily_returns": -0.0001, "total_returns": 0.0,
+    }]
 
     # 未知基准 oid → 400 可读中文(而不是让 rqalpha 报未知合约)
     resp = tc.post("/api/backtest", json={

@@ -20,12 +20,15 @@ from aquant.compat import check_rqalpha_version
 RUN_META_SENTINEL = "@@AQUANT_RUN_META@@"
 
 
-def _emit_run_meta(log_lines: list[str], strategy_prints: list[str]) -> None:
-    """把运行日志写文件回读结果 + 策略 print 以哨兵行回传主进程(单行 JSON)。"""
+def _emit_run_meta(log_lines: list[str], strategy_prints: list[str],
+                   daily_holdings: list[dict] | None = None) -> None:
+    """把运行日志 + 策略 print + 每日持仓以哨兵行回传主进程(单行 JSON)。"""
     meta = {
         "run_log": log_lines,
         "strategy_prints": strategy_prints,
     }
+    if daily_holdings is not None:
+        meta["daily_holdings"] = daily_holdings
     print(RUN_META_SENTINEL + json.dumps(meta, ensure_ascii=False), file=sys.__stdout__, flush=True)
 
 
@@ -71,16 +74,22 @@ def main() -> None:
         run_file(strategy_file, config)
     finally:
         captured = user_lines[-500:]
-        # 平台日志 mod 的落盘产物(log_file 由 run_backtest 注入 mod 配置)
+        # 平台日志 mod 的落盘产物(log_file/holdings_file 由 run_backtest 注入 mod 配置)
         log_lines: list[str] = []
+        daily_holdings: list[dict] | None = None
         try:
-            log_file = (config.get("mod", {}).get("platform_log", {}) or {}).get("log_file")
+            mod_cfg = (config.get("mod", {}).get("platform_log", {}) or {})
+            log_file = mod_cfg.get("log_file")
             if log_file and os.path.exists(log_file):
                 with open(log_file, encoding="utf-8") as f:
                     log_lines = [ln.rstrip("\n") for ln in f if ln.strip()]
+            holdings_file = mod_cfg.get("holdings_file")
+            if holdings_file and os.path.exists(holdings_file):
+                with open(holdings_file, encoding="utf-8") as f:
+                    daily_holdings = json.load(f)
         except Exception:
             pass
-        _emit_run_meta(log_lines, captured[:500])
+        _emit_run_meta(log_lines, captured[:500], daily_holdings)
 
 
 if __name__ == "__main__":

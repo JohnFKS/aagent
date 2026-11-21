@@ -22,6 +22,7 @@ import NetValueChart from './NetValueChart.jsx';
 import MonthlyReturnsTable from './MonthlyReturnsTable.jsx';
 import RunLogPanel from './RunLogPanel.jsx';
 import TradesTable from './TradesTable.jsx';
+import DailyHoldingsPanel from './DailyHoldingsPanel.jsx';
 import FindingsList from './FindingsList.jsx';
 import CodeBlock from './CodeBlock.jsx';
 import VerifyResult from './VerifyResult.jsx';
@@ -908,6 +909,7 @@ export default function StudioPanel({ notify, studioSeed }) {
             <MonthlyReturnsTable series={btRes.data.portfolio_series} />
             <MetricsCards metrics={btRes.data.metrics} />
             <TradesTable trades={btRes.data.trades} />
+            <DailyHoldingsPanel dailyHoldings={btRes.data.daily_holdings} />
             <RunLogPanel runLog={btRes.data.run_log} />
             {btRes.data.verdict && (
               <>

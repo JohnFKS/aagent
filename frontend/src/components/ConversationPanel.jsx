@@ -12,6 +12,7 @@ import NetValueChart from './NetValueChart.jsx';
 import MonthlyReturnsTable from './MonthlyReturnsTable.jsx';
 import RunLogPanel from './RunLogPanel.jsx';
 import TradesTable from './TradesTable.jsx';
+import DailyHoldingsPanel from './DailyHoldingsPanel.jsx';
 import VersionTimeline from './VersionTimeline.jsx';
 import DiffView from './DiffView.jsx';
 
@@ -691,6 +692,7 @@ export default function ConversationPanel({ notify }) {
         />
         <MetricsCards metrics={lastResult?.metrics || currentVersion?.metrics || null} />
         <TradesTable trades={lastResult?.trades ?? currentVersion?.backtest?.trades} />
+        <DailyHoldingsPanel dailyHoldings={lastResult?.daily_holdings ?? currentVersion?.backtest?.daily_holdings} />
         <RunLogPanel runLog={lastResult?.run_log ?? currentVersion?.backtest?.run_log} />
         {lastResult?.verdict?.findings && (
           <FindingsList findings={lastResult.verdict.findings} emptyText="本轮无校验发现。" />
