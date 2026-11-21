@@ -67,7 +67,7 @@ class PlatformLogMod(AbstractMod):
             bus.add_listener(event_type, lambda ev, h=handler: self._safe(h, ev))
 
     def tear_down(self, code, exception=None) -> None:
-        """回测收尾:输出汇总并落盘(异常中断时也保证已写盘内容可读)。"""
+        """回测收尾:输出汇总并一次性落盘(内存缓冲 → 单次写,非逐日 O(n²))。"""
         if exception is not None:
             self._info("⚠️ 回测异常中断,以下为已发生的日志")
         self._info("回测结束")
@@ -218,30 +218,34 @@ class PlatformLogMod(AbstractMod):
         cash = float(portfolio.cash)
         daily_ret = float(portfolio.daily_returns) * 100
         total_ret = float(portfolio.total_returns) * 100
-        rows, market_value = self._positions_snapshot()
+        struct_rows = self._positions_structured()
+        market_value = sum(r["market_value"] for r in struct_rows)
         self._info(
             f"【收盘结算】{env.trading_dt:%Y-%m-%d} 总资产 {_money(total)} "
             f"(现金 {_money(cash)} + 市值 {_money(market_value)}) "
             f"| 日收益 {daily_ret:+.2f}% | 累计 {total_ret:+.2f}%"
         )
-        if rows:
-            self._lines.extend(rows)
+        for r in struct_rows:
+            pnl_pct = (r["close"] / r["avg_price"] - 1) * 100 if r["avg_price"] else 0.0
+            self._lines.append(
+                f"  {r['oid']}({r['name']}) {r['quantity']:g}股 成本 {r['avg_price']:,.3f} "
+                f"现价 {r['close']:,.3f} 市值 {_money(r['market_value'])} "
+                f"浮盈 {pnl_pct:+.2f}%"
+            )
         self._prev_total = total
         # 结构化每日持仓&收益(前端面板数据源)
-        try:
-            self._daily_holdings.append({
-                "date": f"{env.trading_dt:%Y-%m-%d}",
-                "positions": self._positions_structured(),
-                "cash": cash,
-                "total_value": total,
-                "market_value": market_value,
-                "daily_pnl": float(portfolio.daily_pnl),
-                "daily_returns": float(portfolio.daily_returns),
-                "total_returns": float(portfolio.total_returns),
-            })
-        except Exception as exc:  # noqa: BLE001
-            self._warn(f"(每日持仓快照异常:{type(exc).__name__}: {exc})")
-        self._flush()  # 每日增量落盘,中断也不丢
+        self._daily_holdings.append({
+            "date": f"{env.trading_dt:%Y-%m-%d}",
+            "positions": struct_rows,
+            "cash": cash,
+            "total_value": total,
+            "market_value": market_value,
+            "daily_pnl": float(portfolio.daily_pnl),
+            "daily_returns": float(portfolio.daily_returns),
+            "total_returns": float(portfolio.total_returns),
+        })
+        # 性能:日志/持仓缓冲在内存累积,仅在 tear_down 统一落盘
+        # (每日全量重写是 O(n²) I/O,长回测下显著拖慢)
 
 
 def load_mod():  # noqa: D103 - rqalpha ModHandler 约定入口

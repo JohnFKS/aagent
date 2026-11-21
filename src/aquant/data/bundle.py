@@ -51,7 +51,7 @@ import numpy as np
 import pandas as pd
 
 from aquant.compat import BENCHMARK_FALLBACK_OID, YIELD_CURVE_TENORS, current_profile
-from aquant.data.adjust import date_to_int14, ex_cum_factor_from
+from aquant.data.adjust import EX_CUM_FACTOR_DTYPE, date_to_int14, ex_cum_factor_from
 from aquant.data.limits import price_limits
 
 __all__ = ["build_bundle", "BENCHMARK_FALLBACK_OID", "YIELD_CURVE_TENORS"]
@@ -337,6 +337,14 @@ def build_bundle(
         pass
 
     # ---- dividends.h5 / split_factor.h5 / ex_cum_factor.h5 ----
+    etf_fallbacks: dict[str, str] = {}
+
+    def _constant_ex_cum_factor(df: pd.DataFrame) -> np.ndarray:
+        arr = np.empty(len(df), dtype=EX_CUM_FACTOR_DTYPE)
+        arr["start_date"] = [date_to_int14(d) for d in df.index]
+        arr["ex_cum_factor"] = 1.0
+        return arr
+
     div_arrays: dict[str, np.ndarray] = {}
     split_arrays: dict[str, np.ndarray] = {}
     ex_arrays: dict[str, np.ndarray] = {}
@@ -359,9 +367,28 @@ def build_bundle(
             split_arrays[oid] = arr
         df = data["daily"][oid]
         if not df.empty:
-            ex_arrays[oid] = ex_cum_factor_from(
-                df, data["factor"][oid], fill_missing=fill_missing_factors
-            )
+            try:
+                ex_arrays[oid] = ex_cum_factor_from(
+                    df, data["factor"][oid], fill_missing=fill_missing_factors
+                )
+            except ValueError as exc:
+                # 数据源复权因子质量闸门触发:ETF(份额折算致 Baostock hfq 失真,
+                # 典型如纳指科技ETF 159509)降级为不复权(factor=1.0)并记录;
+                # 股票保持严格拒绝(股票复权数据可靠,异常说明真问题)。
+                if inst.get("type") == "ETF":
+                    ex_arrays[oid] = _constant_ex_cum_factor(df)
+                    etf_fallbacks[oid] = str(exc)
+                else:
+                    raise
+    if etf_fallbacks:
+        (out / "adjust_fallback.json").write_text(
+            json.dumps(
+                {"note": "ETF 复权因子质量闸门触发,降级为不复权(factor=1.0)",
+                 "instruments": etf_fallbacks},
+                ensure_ascii=False, indent=2,
+            ),
+            encoding="utf-8",
+        )
     _write_factor_datasets(out / "dividends.h5", div_arrays)
     _write_factor_datasets(out / "split_factor.h5", split_arrays)
     _write_factor_datasets(out / "ex_cum_factor.h5", ex_arrays)

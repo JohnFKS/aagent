@@ -42,7 +42,86 @@ def main() -> None:
 
     check_rqalpha_version()  # 版本不受支持时先失败,避免进入撮合后才崩
 
+    # ---- 平台提速(结果恒一致):plot=False 时桩化 matplotlib --------------
+    # rqalpha_mod_sys_analyser/mod.py 顶层 import .plot.consts → matplotlib 全链
+    # (0.66s/次),而平台强制 plot=False 且策略 import 白名单禁止 matplotlib,
+    # 此时以轻量桩替代,跳过重导入;若启用绘图(或环境开关)则走真实 matplotlib。
+    if (os.environ.get("AQUANT_DISABLE_MPL_STUB") != "1"
+            and not (config.get("mod", {}).get("sys_analyser", {}) or {}).get("plot")
+            and "matplotlib" not in sys.modules):
+        try:
+            import importlib.abc
+            import importlib.machinery
+            import types
+
+            class _MplStub:
+                """惰性桩对象:任意属性/调用返回新桩(ploy: plt.style.use(...) 链可用)。"""
+
+                def __init__(self, name: str) -> None:
+                    self._name = name
+
+                def __getattr__(self, attr: str):
+                    if attr.startswith("__"):
+                        raise AttributeError(attr)
+                    return _MplStub(f"{self._name}.{attr}")
+
+                def __call__(self, *a, **k):
+                    return _MplStub(f"{self._name}()")
+
+                def __iter__(self):
+                    return iter(())
+
+                def __repr__(self):
+                    return f"<mpl-stub {self._name}>"
+
+            class _RCParams(dict):
+                """dict 桩:支持 consts.py 的项赋值/读取与属性式访问。"""
+
+                def __getattr__(self, attr):
+                    return _MplStub(f"rcParams.{attr}")
+
+            class _MplStubLoader(importlib.abc.Loader):
+                def create_module(self, spec):
+                    mod = types.ModuleType(spec.name)
+                    mod.__path__ = []
+                    mod.rcParams = _RCParams({
+                        "font.family": ["sans-serif"],
+                        "font.sans-serif": [],
+                        "axes.unicode_minus": True,
+                    })
+                    mod.__dict__["__getattr__"] = lambda attr: _MplStub(f"{spec.name}.{attr}")
+                    return mod
+
+                def exec_module(self, module) -> None:
+                    return None
+
+            class _MplStubFinder(importlib.abc.MetaPathFinder):
+                def find_spec(self, fullname, path=None, target=None):
+                    if fullname == "matplotlib" or fullname.startswith("matplotlib."):
+                        return importlib.machinery.ModuleSpec(fullname, _MplStubLoader())
+                    return None
+
+            sys.meta_path.insert(0, _MplStubFinder())
+        except Exception:
+            pass  # 桩化失败退化为真实导入
+
     from rqalpha import run_file
+
+    # ---- 平台提速(结果恒一致):history_bars 底层缓存 --------------------
+    # BaseDataSource._all_day_bars_of 每次 get_bars 都重开 h5 全量读取;
+    # bundle 在回测运行期不可变(auto-extend 原子换目录发生在 worker 启动前),
+    # 因此按 (self, instrument) 做 lru 缓存结果恒等。CS 类本就走已缓存的
+    # _filtered_day_bars;此缓存修复 ETF 等非 CS 类型的重读热路径。
+    # 与 rqalpha 自身对 _filtered_day_bars 的 @lru_cache(None) 同一模式;
+    # 安全性:下游(adjust_bars/字段提取)均返回新数组,不改写缓存内容。
+    if os.environ.get("AQUANT_DISABLE_BAR_CACHE") != "1":
+        try:
+            from rqalpha.data.base_data_source.data_source import BaseDataSource
+            from rqalpha.utils.functools import lru_cache as _rq_lru
+
+            BaseDataSource._all_day_bars_of = _rq_lru(None)(BaseDataSource._all_day_bars_of)
+        except Exception:
+            pass  # 缓存装配失败不阻塞回测(退化为原直读行为)
 
     # 策略 print / logger 捕获:rqalpha 把策略 print 重定向到 user_log(logbook,
     # stderr),通过包一层 init_logger 追加捕获 handler;时间戳为回测交易时间

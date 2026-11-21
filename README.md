@@ -412,6 +412,24 @@ python -m aquant.data.build_bundle --source akshare \
 - 分层验证(`/api/verify`)的随机基准需从股票合约构造,**纯 ETF bundle 不支持**(返回 400 指引),
   如需分层验证请另建含个股的 bundle。
 
+### 回测性能
+
+平台侧优化(结果**逐位一致**,不改变任何计算口径):
+
+- **行情读取缓存**:`BaseDataSource._all_day_bars_of` 增加 lru 缓存 —— bundle 在
+  回测运行期不可变,原实现每次 `history_bars` 都重开 h5 全量读取;多标的策略
+  (ETF 轮动等)由此受益最大(CS 类型本就走已缓存的 `_filtered_day_bars`);
+- **日志落盘 O(n²)→O(n)**:运行日志/每日持仓改为内存累积、`tear_down` 一次性写盘;
+- **持仓快照去重**:收盘结算的文本行与结构化持仓共用一次快照;
+- **matplotlib 桩化**:`plot=False` 时对 `matplotlib.*` 安装 meta_path 桩
+  (策略 import 白名单禁止 matplotlib,桩只在平台侧生效),单次省约 0.4~0.7s。
+
+提速幅度取决于策略形态:轻策略(双均线,1 年)3.25s → 2.81s(≈13%);
+重策略(44 组超参 × 45 标的动量回归,1 年)瓶颈在**策略自身计算**(约 5s),
+平台开销已压至 1s 内。策略自身的计算优化不在平台改动范围(保证结果一致)。
+A/B 开关:`AQUANT_DISABLE_BAR_CACHE=1` / `AQUANT_DISABLE_MPL_STUB=1`
+(指标与开启态**逐位一致**,已实测验证)。
+
 ### 如何验证回测准确性(闭式对照,精确到分)
 
 平台内置**解析可对照验证**:构造结果可手算的确定性策略(首日买入 100 股、末日卖出),
