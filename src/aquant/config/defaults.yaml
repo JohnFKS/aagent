@@ -22,11 +22,14 @@ volume_limit:
   max_allowed: 0.25
 
 transaction_cost:
-  # 佣金倍率(默认佣金:股票万八)与印花税倍率(默认千一、卖出单边),
+  # 佣金倍率(默认佣金:股票万八)与印花税倍率(卖出单边),
   # ≥1 才是真实世界;禁止 <1。
   stock_commission_multiplier_min: 1.0
   tax_multiplier_min: 1.0
   stock_min_commission: 5.0
+  # PIT 印花税率(贴近真实历史):2023-08-28 起财政部减半征收,卖出印花税
+  # 由千一(0.001)调整为万五(0.0005);启用后按卖出日回看适用税率。
+  pit_tax: true
 
 matching:
   # 涨跌停撮合限制与 T+1 是 A 股市场规则,绝不允许关闭。

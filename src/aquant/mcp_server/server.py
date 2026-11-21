@@ -931,6 +931,35 @@ def platform_rank_strategies(candidates: list[dict[str, Any]]) -> str:
         return f"排名失败:{type(exc).__name__}: {exc}"
 
 
+@mcp.tool(
+    description=(
+        "回测准确性自检(闭式对照):构造结果可手算的确定性策略(买入持有卖出),"
+        "用 bundle 原始行情 + 平台撮合/成本规则闭式计算期望值,与平台输出逐项比对"
+        "(成交价滑点公式/佣金/PIT 印花税率/期末资金/净值恒等式),精确到分。"
+        "无参数;返回 Markdown 报告,全部通过即可确认平台回测引擎准确可信。"
+        "纯本地执行(1~3 次真实回测,约 10~60s)。"
+    )
+)
+def platform_verify_accuracy() -> str:
+    """运行回测准确性验证套件,返回人读报告。"""
+    try:
+        from pathlib import Path
+
+        from aquant.verify.accuracy import run_accuracy_checks
+
+        # bundle 解析:AQUANT_BUNDLE_PATH → 平台默认 bundle-baostock → 默认路径
+        bundle = os.environ.get("AQUANT_BUNDLE_PATH")
+        if not bundle and (Path.home() / ".aquant" / "bundle-baostock" / "trading_dates.npy").exists():
+            bundle = str(Path.home() / ".aquant" / "bundle-baostock")
+        result = run_accuracy_checks(bundle_path=bundle)
+        return result["report_md"]
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f"准确性验证失败:{type(exc).__name__}: {exc}。"
+            "请确认 AQUANT_BUNDLE_PATH 指向已构建的 bundle(默认数据 bundle 见 README)。"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 多轮对话会话工具:策略全程可见/可编辑/可回退/可对比
 # ---------------------------------------------------------------------------

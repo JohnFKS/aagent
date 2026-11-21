@@ -612,6 +612,7 @@ class TestToolRegistration:
         "platform_list_instruments",
         "platform_diagnose_strategy",
         "platform_rank_strategies",
+        "platform_verify_accuracy",
         "platform_session_create",
         "platform_session_list",
         "platform_session_get",
@@ -637,10 +638,10 @@ class TestToolRegistration:
         for tool in tools:
             assert tool.description  # 每个 tool 都有中文描述
 
-    def test_tools_list_count_is_28(self):
-        """tools/list 数量 = 28(12 个单次工具 + 16 个会话/CRUD 工具)。"""
+    def test_tools_list_count_is_29(self):
+        """tools/list 数量 = 29(13 个单次工具 + 16 个会话/CRUD 工具)。"""
         tools = asyncio.run(server.mcp.list_tools())
-        assert len(tools) == 28
+        assert len(tools) == 29
 
     def test_long_running_tools_have_time_expectations_in_description(self):
         """optimize/verify/arena 的 description 必须写明耗时预期,供外部 agent 决策。"""

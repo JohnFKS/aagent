@@ -62,6 +62,8 @@ def platform_mod_config(user_overrides: dict[str, Any] | None = None) -> dict[st
             "stock_min_commission": dfts["transaction_cost"]["stock_min_commission"],
             "stock_commission_multiplier": 1.0,
             "tax_multiplier": 1.0,
+            # PIT 印花税率:2023-08-28 前千一、后万五(贴近真实 A 股历史)
+            "pit_tax": dfts["transaction_cost"]["pit_tax"],
         },
         "sys_accounts": {
             "stock_t1": dfts["matching"]["stock_t1_enabled"],
