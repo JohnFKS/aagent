@@ -62,6 +62,8 @@ class BacktestResult:
     config_used: dict = field(default_factory=dict)
     config_fingerprint: str = ""   # 运行配置哈希(可复现性审计用)
     strategy_fingerprint: str = ""  # 策略代码哈希(同一指纹 ⇔ 同一代码)
+    # 基准净值序列(sys_analyser 配置 base.benchmark 时才有;未配置为空表)
+    benchmark_portfolio: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def run_backtest(
@@ -129,6 +131,9 @@ def run_backtest(
 
     summary = dict(raw.get("summary", {}))
     portfolio = _normalize_portfolio(raw.get("portfolio"))
+    # 基准净值(sys_analyser 配置 base.benchmark 时输出 benchmark_portfolio:
+    # index=date, column=unit_net_value);未配置时保持空表
+    benchmark_portfolio = _normalize_portfolio(raw.get("benchmark_portfolio"))
     trades = raw.get("trades", [])
 
     if unsafe:
@@ -156,6 +161,7 @@ def run_backtest(
         config_used=config,
         config_fingerprint=config_fingerprint,
         strategy_fingerprint=hashlib.sha256(code.encode("utf-8")).hexdigest()[:16],
+        benchmark_portfolio=benchmark_portfolio,
     )
 
 

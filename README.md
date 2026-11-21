@@ -103,9 +103,13 @@ pip install -e ".[dev,baostock,akshare]"
 # 3. 构建数据 bundle —— 默认 Baostock 主力 + AKShare 交叉校验
 
 #   3a. 主力源:Baostock 真实价 + 后复权因子;AKShare 自动做跨源比价
+#       (平台默认 bundle 即按此构建:10 只流动性个股,2022-01-04 ~ 2024-12-31)
 python -m aquant.data.build_bundle --source baostock \
-    --codes 000001,600519 --start 2021-01-01 --end 2026-11-15 \
+    --codes 000001,600519,600036,000333,601318,000858,002415,600276,300750,601012 \
+    --start 2022-01-01 --end 2024-12-31 \
     --out ~/.aquant/bundle-baostock
+#   构建后注入真实基准指数(上证指数 + 沪深300,Baostock 指数接口):
+#   scripts/add_benchmark_index.sh ~/.aquant/bundle-baostock 000001.XSHG,000300.XSHG
 #   raw/hfq close 超差时按覆盖度评分自动切换到数据最全的源整段回测(不混源),
 #   选择原因与差异明细写入 bundle/cross_check.json
 #   K线默认缓存到 ~/.aquant/cache/duckdb,用 --cache-max-mb / --cache-retention-days
@@ -119,7 +123,8 @@ python -m aquant.data.build_bundle --source akshare \
     --codes 000001,600519 --start 2022-01-01 --end 2024-12-31 \
     --out ~/.aquant/bundle-stock
 
-# 4. 一键启动完整平台(前端 + API),默认加载 ~/.aquant/bundle-etf
+# 4. 一键启动完整平台(前端 + API),默认加载 ~/.aquant/bundle-baostock
+#    (默认 bundle:10 只流动性个股 + 真实上证指数/沪深300 基准,见下方「A股基准与收益图」)
 scripts/start_platform.sh 8000
 # 指定其它 bundle: scripts/start_platform.sh 8000 ~/.aquant/bundle-stock
 # 浏览器打开 http://127.0.0.1:8000
@@ -135,12 +140,24 @@ python -m pytest tests/
 
 ## 方式一:Web 界面(推荐)
 
-启动平台后浏览器打开 `http://127.0.0.1:8000`,顶部两个 Tab:
+启动平台后浏览器打开 `http://127.0.0.1:8000`,顶部五个 Tab:
+
+**Tab 0 · 编写指南(外部模型工作流)**
+- 面向"用任意大模型网页对话(ChatGPT / Claude / Gemini / DeepSeek / Kimi…)生成策略代码"的用户:
+  - **一键复制的提示词模板**(完整版 + 极简版):模板内容与平台四层校验规则逐条对齐
+    (禁未来函数/外部数据/墙钟时间、`history_bars` 一维数组语义、下单仅限 `handle_bar`、
+    标的池白名单),照模板生成的代码**默认配置下可直接校验通过并回测成功**;
+  - 三步工作流:复制提示词 → 模型网页生成(只要一个 python 代码块)→ 回平台校验台
+    过 Layer 1 → 策略工坊回测;
+  - 代码契约速查(允许/禁止对照表)、标的池(平台 bundle 内标的)、常见回测失败与修复
+    对照表、收益图与指标导读、提交前自查清单;
+  - 参考骨架可一键"送入策略工坊"。
 
 **Tab 1 · 策略对话**
 - 左栏:自然语言描述策略需求(选起止日期)→"生成并回测"→ 五步进度条
   (生成代码 → Layer 1 校验 → 回测执行 → 评审复核 → 报告生成)→
-  指标卡(总收益/年化/夏普/回撤/佣金/印花税,A股习惯涨红跌绿)+ 净值曲线 + K 线(标的行情)+
+  指标卡(总收益/年化/夏普/回撤/基准收益/佣金/印花税,A股习惯涨红跌绿)+
+  **收益图(策略净值曲线 + A股基准对照线,默认上证指数)** + K 线(标的行情)+
   校验结论(✗/⚠/ℹ 分级)+ 生成代码 + 完整报告弹层
 - 右栏"校验台":粘贴任意策略代码 → 仅校验 / 校验并回测;附"填入坏策略示例"
   (含 `.shift(-1)` 未来函数)体验 Layer 1 拦截
@@ -154,10 +171,11 @@ python -m pytest tests/
   - 代码编辑器(行号、Tab 缩进、Ctrl/Cmd+Enter 快捷执行),模板:空白骨架 /
     双均线择时 / RSI 超卖(规范 ndarray 写法);
   - 本地策略库(localStorage):保存/载入/删除/导出 .py,草稿自动恢复;
-  - **回测方式自选**:日期区间、初始资金,高级选项可自选更保守的滑点与
-    成交量占比(平台默认即保守值;激进值由 Layer 1 拒绝);
-  - **分析方式自选**(勾选执行):基础回测(必选)/ 分层验证(Layer 4:
-    IS→OOS 对照 + 随机基准 + 模拟盘清单)/ K 线行情(自动从代码提取标的);
+  - **回测方式自选**:日期区间、初始资金、**A股基准**(上证指数 / 沪深300 / 不设基准),
+    高级选项可自选更保守的滑点与成交量占比(平台默认即保守值;激进值由 Layer 1 拒绝);
+  - **分析方式自选**(勾选执行):基础回测(必选,含**收益图**:策略净值曲线 +
+    A股基准对照线)/ 分层验证(Layer 4:IS→OOS 对照 + 随机基准 + 模拟盘清单)/
+    K 线行情(自动从代码提取标的);
   - 手动模式与 Agent 模式殊途同归:**所有代码都过同一套四层校验**;
   - **对话生成的代码可"送入策略工坊编辑"再加工**(编辑器 ↔ Agent 交替迭代)。
 
@@ -229,8 +247,8 @@ python -m aquant validate strategies/demo_ma_cross.py \
 |---|---|---|---|
 | `/api/health` | GET | - | 健康与版本 |
 | `/api/validate` | POST | readonly | Layer 1 校验:`{"code", "start"?, "end"?}` |
-| `/api/chat` | POST | readwrite | 对话式全管线:`{"text", "start", "end"}` → steps/verdict/metrics/portfolio_series/report |
-| `/api/backtest` | POST | readwrite | 直接回测已就绪代码:`{"code", "start", "end", "cash"?}` |
+| `/api/chat` | POST | readwrite | 对话式全管线:`{"text", "start", "end", "benchmark"?}` → steps/verdict/metrics/portfolio_series/benchmark_series/report |
+| `/api/backtest` | POST | readwrite | 直接回测已就绪代码:`{"code", "start", "end", "cash"?, "benchmark"?, "overrides"?}` → metrics/portfolio_series/benchmark_series(默认基准上证指数,`"none"` 关闭) |
 | `/api/arena` | POST | readwrite | 多策略竞技场:`{"candidates": [{"name","code"}...1~6], "start", "end"}` |
 | `/api/kline` | GET | readonly | K 线真实价:`?oid=000001.XSHE&start=...&end=...` |
 
@@ -373,6 +391,22 @@ python -m aquant.data.build_bundle --source akshare \
 - 分层验证(`/api/verify`)的随机基准需从股票合约构造,**纯 ETF bundle 不支持**(返回 400 指引),
   如需分层验证请另建含个股的 bundle。
 
+### A股基准与收益图
+
+回测界面(Chat / 工坊 / 多轮工作台)的收益图叠加**真实 A 股基准净值曲线**,与策略净值
+同为"首日归一 = 1.0"口径,指标卡附带基准收益与超额(alpha/beta):
+
+```bash
+# 给既有 bundle 注入真实指数日线(Baostock,免 token):上证指数 + 沪深300
+scripts/add_benchmark_index.sh ~/.aquant/bundle-baostock 000001.XSHG,000300.XSHG
+# 幂等可重复执行;来源与行数写入 bundle/benchmark_meta.json(响应如实标注数据出处)
+```
+
+- 平台默认基准 = 上证指数(000001.XSHG);工坊可切换沪深300 或关闭基准;
+- 未注入真实指数的 bundle 中该 oid 为成分股等权合成基准(仅形态对照,响应如实标注);
+- API 侧:`/api/backtest` 与 `/api/chat` 返回 `portfolio_series` + `benchmark_series`
+  (`[{date, net_value}]`,等距抽样 ≤400 点)。
+
 ---
 
 ## LLM 配置(接入大模型)
@@ -453,18 +487,19 @@ scripts/upgrade_rqalpha.sh 6.6.0 --apply   # 验证通过后应用到当前 .ven
 
 - [策略代码编写规范](docs/strategy-code-conventions.md):RQAlpha 日线策略结构、未来函数/外部数据/墙钟时间禁令、下单与配置门禁、提交前自查。
 - [数据处理规范](docs/data-processing-conventions.md):Baostock 主力 + AKShare 补充、真实价与复权因子口径、跨源比价与超差回退、DuckDB 缓存与容量控制、ST/停牌/退市处理。
+- [LLM 提示词模板](docs/llm-prompt-template.md):用任意大模型网页对话生成"百分百可回测"策略代码的提示词模板与工作流(与前端「编写指南」Tab 同源)。
 
 ## 项目结构
 
 ```
 ├── docs/               # design.md(架构+ADR)、system-test-report.md、gui-test-protocol.md
-├── frontend/           # React 18 + Vite(对话/校验台/竞技场/K线/净值图)
-├── scripts/            # start_platform.sh 一键启动
+├── frontend/           # React 18 + Vite(编写指南/对话/校验台/竞技场/K线/收益图+基准)
+├── scripts/            # start_platform.sh 一键启动;add_benchmark_index.sh 注入真实基准指数
 ├── screenshots/        # 系统测试截图证据
 ├── src/aquant/
 │   ├── validation/     # Layer 1:AST 规则 + 配置 lint + findings
 │   ├── config/         # Layer 3:defaults.yaml(唯一事实来源)+ schema
-│   ├── data/           # Layer 2:provider/synthetic/akshare/cache/limits/adjust/bundle
+│   ├── data/           # Layer 2:provider/synthetic/akshare/cache/limits/adjust/bundle/benchmark
 │   ├── runner/         # RQAlpha 子进程封装 + key_metrics
 │   ├── verify/         # Layer 4:pipeline/metrics/arena
 │   ├── agents/         # 4 子 agent + orchestrator + experience + prompts

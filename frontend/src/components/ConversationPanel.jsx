@@ -8,6 +8,7 @@ import { api } from '../api.js';
 import CodeEditor from './CodeEditor.jsx';
 import MetricsCards, { formatValue } from './MetricsCards.jsx';
 import FindingsList from './FindingsList.jsx';
+import NetValueChart from './NetValueChart.jsx';
 import VersionTimeline from './VersionTimeline.jsx';
 import DiffView from './DiffView.jsx';
 
@@ -661,6 +662,12 @@ export default function ConversationPanel({ notify }) {
             <p>{lastResult.analysis}</p>
           </div>
         )}
+        {/* 收益图(策略净值 vs A股基准):优先展示本轮结果,否则展示当前版本存档序列 */}
+        <NetValueChart
+          series={lastResult?.portfolio_series ?? currentVersion?.backtest?.portfolio_series}
+          benchmarkSeries={lastResult?.benchmark_series ?? currentVersion?.backtest?.benchmark_series}
+          benchmarkLabel="A股基准(上证指数)"
+        />
         <MetricsCards metrics={lastResult?.metrics || currentVersion?.metrics || null} />
         {lastResult?.verdict?.findings && (
           <FindingsList findings={lastResult.verdict.findings} emptyText="本轮无校验发现。" />

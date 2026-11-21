@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
+
 from aquant.config.schema import default_bundle_path
 
 
@@ -38,6 +40,7 @@ class RealRunnerAdapter:
             return {
                 "summary": None,
                 "portfolio": None,
+                "benchmark_portfolio": pd.DataFrame(),
                 "trades": [],
                 "verdict": None,
                 "unsafe": False,
@@ -46,6 +49,7 @@ class RealRunnerAdapter:
         return {
             "summary": key_metrics(result),
             "portfolio": result.portfolio,
+            "benchmark_portfolio": result.benchmark_portfolio,
             "trades": result.trades,
             "verdict": result.verdict,
             "unsafe": result.unsafe,

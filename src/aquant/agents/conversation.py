@@ -21,6 +21,7 @@ from aquant.agents.experience import ExperienceStore, derive_tags
 from aquant.agents.llm import LLMClient, make_llm
 from aquant.agents.orchestrator import (
     _build_report,
+    _extract_benchmark_series,
     _extract_execution_error,
     _extract_metrics,
     _extract_portfolio_series,
@@ -204,11 +205,13 @@ def run_edit_turn(
     experience: ExperienceStore | None = None,
     metrics: dict[str, Any] | None = None,
     cash: float | None = None,
+    benchmark: str | None = None,
     backtest: bool = True,
 ) -> dict[str, Any]:
     """执行一轮「按需求改码 → 完整校验 → 回测 → 报告」,返回与 /api/chat 同构结果。
 
     backtest=False 或 runner=None 时跳过回测(返回 metrics=None),便于快速预览代码修改。
+    benchmark: 基准指数 oid(None 时回测不设基准)。
     """
     llm = llm if llm is not None else make_llm()
     validation_agent = ValidationAgent()
@@ -235,7 +238,8 @@ def run_edit_turn(
             return {
                 "ok": False, "rejected": True, "steps": steps, "code": None,
                 "analysis": "", "verdict": exc.verdict.to_dict(), "metrics": None,
-                "portfolio_series": None, "report": None, "error": str(exc),
+                "portfolio_series": None, "benchmark_series": None,
+                "report": None, "error": str(exc),
             }
         code = outcome["code"]
         steps.append({
@@ -243,7 +247,7 @@ def run_edit_turn(
             "summary": f"第 {outcome['attempts']} 次修改通过 Layer 1 代码校验。",
         })
 
-        run_config = build_run_config(start, end, cash=cash)
+        run_config = build_run_config(start, end, cash=cash, benchmark=benchmark)
         verdict = validation_agent.validate(code, run_config)
         steps.append({
             "step": "validate", "passed": not verdict.has_error,
@@ -260,11 +264,14 @@ def run_edit_turn(
             })
             result_metrics = None
             series: list[dict[str, Any]] = []
+            benchmark_series: list[dict[str, Any]] = []
             break
 
         exec_kw: dict[str, Any] = {}
         if cash is not None:
             exec_kw["cash"] = cash
+        if benchmark:
+            exec_kw["benchmark"] = benchmark
         execution = BacktestAgent(runner, validation_agent).execute(
             code, start, end, run_config=run_config, **exec_kw
         )
@@ -298,6 +305,7 @@ def run_edit_turn(
                                error=f"回测运行时错误(自愈 {MAX_RUNTIME_RETRIES} 次后仍失败):{exec_error}")
         result_metrics = _extract_metrics(result_obj, start, end)
         series = _extract_portfolio_series(result_obj)
+        benchmark_series = _extract_benchmark_series(result_obj)
         steps.append({
             "step": "backtest", "skipped": False, "rejected": False,
             "summary": "回测执行完成,指标已汇总。",
@@ -318,6 +326,7 @@ def run_edit_turn(
         "verdict": verdict.to_dict(),
         "metrics": result_metrics,
         "portfolio_series": series,
+        "benchmark_series": benchmark_series,
         "report": report,
         "error": None,
     }

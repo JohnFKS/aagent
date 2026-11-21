@@ -46,6 +46,7 @@ def run_conversation(
     runner: Runner | None = None,
     experience: ExperienceStore | None = None,
     cash: float | None = None,
+    benchmark: str | None = None,
 ) -> dict[str, Any]:
     """执行一次完整对话编排,返回 JSON 友好的结果 dict。
 
@@ -55,7 +56,9 @@ def run_conversation(
     :param runner: 回测执行器(缺省 None 时跳过回测步骤;测试注入 stub,api 层注入真实适配器);
     :param experience: 经验库(可选)。提供时:生成前按需求标签检索相似案例注入编辑器,
         report 后把本次结果 record 入库;edit 失败也记录失败案例;记录异常不阻塞管线。
-    :returns: {"ok", "rejected", "steps", "code", "verdict", "metrics", "review", "report", "error"}
+    :param benchmark: 基准指数 oid(如 000001.XSHG);None 时回测不设基准。
+    :returns: {"ok", "rejected", "steps", "code", "verdict", "metrics", "portfolio_series",
+        "benchmark_series", "review", "report", "error"}
     """
     llm = llm if llm is not None else make_llm()
     validation_agent = ValidationAgent()
@@ -97,6 +100,7 @@ def run_conversation(
                 "verdict": exc.verdict.to_dict(),
                 "metrics": None,
                 "portfolio_series": None,
+                "benchmark_series": None,
                 "review": [],
                 "report": None,
                 "error": str(exc),
@@ -119,11 +123,14 @@ def run_conversation(
                           "summary": "未注入 runner,跳过回测(测试可注入 stub,api 层注入 RealRunnerAdapter)。"})
             metrics = None
             portfolio_series: list | None = []
+            benchmark_series: list | None = []
             break
 
         exec_kw: dict[str, Any] = {}
         if cash is not None:
             exec_kw["cash"] = cash
+        if benchmark:
+            exec_kw["benchmark"] = benchmark
         outcome = BacktestAgent(runner, validation_agent).execute(
             code, start, end, run_config=run_config, **exec_kw
         )
@@ -156,6 +163,7 @@ def run_conversation(
                                error=f"回测运行时错误(自愈 {MAX_RUNTIME_RETRIES} 次后仍失败):{exec_error}")
         metrics = _extract_metrics(result_obj, start, end)
         portfolio_series = _extract_portfolio_series(result_obj)
+        benchmark_series = _extract_benchmark_series(result_obj)
         steps.append({"step": "backtest", "skipped": False, "rejected": False,
                       "summary": "回测执行完成,指标已汇总。" if metrics else "回测已执行,未取到 summary 指标。"})
         break
@@ -184,6 +192,7 @@ def run_conversation(
         "verdict": verdict.to_dict(),
         "metrics": metrics,
         "portfolio_series": portfolio_series,
+        "benchmark_series": benchmark_series,
         "review": merged,
         "report": report,
         "error": None,
@@ -223,6 +232,7 @@ def _terminated(steps: list[dict[str, Any]], *, code: str | None, verdict: Verdi
         "verdict": verdict.to_dict(),
         "metrics": None,
         "portfolio_series": None,
+        "benchmark_series": None,
         "review": [],
         "report": None,
         "error": error,
@@ -272,6 +282,47 @@ def _extract_portfolio_series(result: Any, max_points: int = 400) -> list[dict[s
         tv = df["total_value"].astype(float)
         base = float(tv.iloc[0]) or 1.0
         net = tv / base
+        step = max(1, len(net) // max_points)
+        picked = list(range(0, len(net), step))
+        if (len(net) - 1) % step != 0:
+            picked.append(len(net) - 1)
+
+        def _point(i: int) -> dict[str, Any]:
+            return {
+                "date": pd.Timestamp(df.index[i]).strftime("%Y-%m-%d"),
+                "net_value": round(float(net.iloc[i]), 6),
+            }
+
+        return [_point(i) for i in picked]
+    except Exception:
+        return []
+
+
+def _extract_benchmark_series(result: Any, max_points: int = 400) -> list[dict[str, Any]]:
+    """从 Runner 返回中提取基准净值序列([{date, net_value}]),供前端叠加基准曲线。
+
+    数据来源:sys_analyser 配置 base.benchmark 时输出的 benchmark_portfolio
+    (index=date, column=unit_net_value);与策略序列同样归一化首日 = 1.0 并
+    等距抽样。任何异常/未配置基准返回空列表(图表非关键路径)。
+    """
+    import pandas as pd
+
+    bm = result.get("benchmark_portfolio") if isinstance(result, dict) \
+        else getattr(result, "benchmark_portfolio", None)
+    if bm is None:
+        return []
+    try:
+        df = bm if isinstance(bm, pd.DataFrame) else pd.DataFrame(bm)
+        if df.empty:
+            return []
+        # rqalpha 6.5.0 benchmark_portfolio 列名 unit_net_value;容错其它常见列
+        col = next((c for c in ("unit_net_value", "total_value", "benchmark_unit_net_value")
+                    if c in df.columns), None)
+        if col is None:
+            return []
+        nv = df[col].astype(float)
+        base = float(nv.iloc[0]) or 1.0
+        net = nv / base
         step = max(1, len(net) // max_points)
         picked = list(range(0, len(net), step))
         if (len(net) - 1) % step != 0:

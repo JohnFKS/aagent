@@ -7,12 +7,14 @@ import ConversationPanel from './components/ConversationPanel.jsx';
 import ValidatePanel from './components/ValidatePanel.jsx';
 import ArenaPanel from './components/ArenaPanel.jsx';
 import StudioPanel from './components/StudioPanel.jsx';
+import GuidePanel from './components/GuidePanel.jsx';
 import SettingsPanel from './components/SettingsPanel.jsx';
 import { api } from './api.js';
 
 const TOAST_ICON = { error: '✗', success: '✓', warn: '⚠', info: 'ℹ' };
 
 const TABS = [
+  { key: 'guide', label: '编写指南', hint: '用任意模型网页生成可回测策略', icon: 'book' },
   { key: 'chat', label: '策略对话', hint: '对话生成 + 校验台', icon: 'chat' },
   { key: 'conversation', label: '多轮工作台', hint: '持续迭代同一策略', icon: 'layers' },
   { key: 'arena', label: '策略竞技场', hint: '多候选同场回测', icon: 'arena' },
@@ -21,6 +23,7 @@ const TABS = [
 
 function NavIcon({ name }) {
   const common = { viewBox: '0 0 20 20', width: 18, height: 18, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' };
+  if (name === 'book') return <svg {...common}><path d="M4 3.5h5.5A2.5 2.5 0 0 1 12 6v10.5H6.5A2.5 2.5 0 0 1 4 14V3.5z" /><path d="M12 6h4v10.5h-4" /><path d="M6.5 7h3M6.5 10h3" /></svg>;
   if (name === 'chat') return <svg {...common}><path d="M3.5 4.5h13v9h-7l-4 3v-3h-2z" /></svg>;
   if (name === 'layers') return <svg {...common}><path d="M10 2.8 17 6l-7 3.2L3 6z" /><path d="m3 10 7 3.2L17 10M3 14l7 3.2L17 14" /></svg>;
   if (name === 'arena') return <svg {...common}><path d="M6 3h8v4a4 4 0 0 1-8 0z" /><path d="M6 4H3.5v2A2.5 2.5 0 0 0 6 8.5M14 4h2.5v2A2.5 2.5 0 0 1 14 8.5M10 11v3M7 17h6M8 14h4v3H8z" /></svg>;
@@ -33,7 +36,7 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   const [seed, setSeed] = useState({ code: '', n: 0 });
   const [studioSeed, setStudioSeed] = useState({ code: '', n: 0 });
-  const [tab, setTab] = useState('chat');
+  const [tab, setTab] = useState('guide');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const idRef = useRef(1);
 
@@ -126,6 +129,9 @@ export default function App() {
       <div className="app-main">
         <Header status={health.status} version={health.version} llmLabel={llmLabel} onOpenSettings={() => setSettingsOpen(true)} />
         <main className="content">
+          <section className={`guide-wrap ${tab === 'guide' ? '' : 'layout-hidden'}`}>
+            <GuidePanel notify={notify} onSeedStudio={sendToStudio} />
+          </section>
           <section className={`layout ${tab === 'chat' ? '' : 'layout-hidden'}`}>
             <ChatPanel notify={notify} onSeedValidate={sendToValidator} onSeedStudio={sendToStudio} />
             <ValidatePanel notify={notify} seed={seed} />

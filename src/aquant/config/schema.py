@@ -94,8 +94,6 @@ def platform_base_config(
         "frequency": "1d",
         "accounts": {"STOCK": cash if cash is not None else dfts["account"]["default_cash"]},
     }
-    if benchmark:
-        base["benchmark"] = benchmark
     return base
 
 
@@ -106,11 +104,18 @@ def build_run_config(
     cash: float | None = None,
     benchmark: str | None = None,
 ) -> dict[str, Any]:
-    """汇总为完整 RQAlpha run 配置。mod/base 由平台产出,校验层负责把关。"""
-    return {
-        "base": platform_base_config(start_date, end_date, cash=cash, benchmark=benchmark),
+    """汇总为完整 RQAlpha run 配置。mod/base 由平台产出,校验层负责把关。
+
+    基准指数写入 ``mod.sys_analyser.benchmark``(6.5.0 规范键;旧的 ``base.benchmark``
+    已被 rqalpha 标记 deprecated,仅作为兼容回退)。
+    """
+    config = {
+        "base": platform_base_config(start_date, end_date, cash=cash),
         "mod": platform_mod_config(user_mod_overrides),
     }
+    if benchmark:
+        config["mod"].setdefault("sys_analyser", {})["benchmark"] = benchmark
+    return config
 
 
 def injected_defaults_descriptions(

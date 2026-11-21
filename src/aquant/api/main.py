@@ -51,6 +51,43 @@ BUNDLE_GUIDANCE = (
     "构建完成后重新调用 /api/chat。"
 )
 
+# 平台默认 A 股基准:上证指数(indexes.h5 恒存在的 fallback oid,注入真实行情后
+# 即为真实上证指数;无真实数据的历史 bundle 中为成分股等权合成基准,响应会如实标注)。
+DEFAULT_BENCHMARK_OID = "000001.XSHG"
+
+_BENCHMARK_LABELS = {
+    "000001.XSHG": "上证指数",
+    "000300.XSHG": "沪深300",
+    "000905.XSHG": "中证500",
+    "399006.XSHE": "创业板指",
+}
+
+
+def _resolve_benchmark(raw: str | None) -> str | None:
+    """解析请求的基准参数:None/'' → 平台默认上证指数;'none' → 不设基准;其余原样。"""
+    if raw is None:
+        return DEFAULT_BENCHMARK_OID
+    text = str(raw).strip()
+    if not text or text.lower() == "none":
+        return None
+    return text
+
+
+def _benchmark_meta() -> dict[str, Any]:
+    """读取当前 bundle 的基准元数据(benchmark_meta.json,由 scripts/add_benchmark_index.py 写入)。
+
+    用于向响应如实标注基准数据是真实指数(sources 非空)还是合成等权基准。
+    """
+    from pathlib import Path
+
+    meta_file = Path(default_bundle_path()) / "benchmark_meta.json"
+    try:
+        import json
+
+        return json.loads(meta_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
 
 def _get_llm(request: Request) -> LLMClient:
     """LLM 依赖:优先取 app.state.llm(测试注入),否则按环境变量惰性构造。"""
@@ -92,6 +129,10 @@ class ChatRequest(BaseModel):
     text: str = Field(min_length=1, description="策略需求描述")
     start: str = Field(description="回测起始日 YYYY-MM-DD")
     end: str = Field(description="回测结束日 YYYY-MM-DD")
+    benchmark: str | None = Field(
+        default=None,
+        description="基准指数 oid;None=平台默认(上证指数),'none'=不设基准",
+    )
 
 
 class BacktestRequest(BaseModel):
@@ -101,6 +142,10 @@ class BacktestRequest(BaseModel):
     start: str = Field(description="回测起始日 YYYY-MM-DD")
     end: str = Field(description="回测结束日 YYYY-MM-DD")
     cash: float | None = Field(default=None, description="初始资金,缺省用平台默认")
+    benchmark: str | None = Field(
+        default=None,
+        description="基准指数 oid;None=平台默认(上证指数),'none'=不设基准",
+    )
     overrides: dict | None = Field(
         default=None,
         description=(
@@ -152,6 +197,7 @@ def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
             llm=_get_llm(request),
             runner=_get_runner(request),
             experience=store,
+            benchmark=_resolve_benchmark(req.benchmark),
         )
     except FileNotFoundError as exc:
         # 真实回测需要 bundle;缺失属于用户可修复的环境问题,给 400 + 指引而非 500
@@ -167,20 +213,26 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
 
     手动模式(用户自选参数):可选 overrides 原样并入 run 配置交给既有 Layer 1
     把关——更保守的值(如更高滑点)放行,激进值(如零滑点)422 拒绝,零新逻辑。
+    响应附带策略净值序列(portfolio_series)与基准净值序列(benchmark_series),
+    供前端绘制"策略 vs A股基准"收益图。
     """
+    benchmark = _resolve_benchmark(req.benchmark)
     # 校验配置:overrides 并入后交 Layer 1 lint(激进值在此被拦)
     run_config = build_run_config(
-        req.start, req.end, cash=req.cash, user_mod_overrides=req.overrides
+        req.start, req.end, cash=req.cash, benchmark=benchmark,
+        user_mod_overrides=req.overrides,
     )
     agent = BacktestAgent(runner=_get_runner(request))
     try:
-        # 执行配置:cash 与 overrides 都需透传给 runner(run_config 仅用于校验,
-        # BacktestAgent.execute 不会自动从中提取 cash)。
+        # 执行配置:cash / overrides / benchmark 都需透传给 runner(run_config 仅
+        # 用于校验,BacktestAgent.execute 不会自动从中提取执行参数)。
         exec_kw: dict[str, Any] = {}
         if req.overrides:
             exec_kw["mod_overrides"] = req.overrides
         if req.cash is not None:
             exec_kw["cash"] = req.cash
+        if benchmark:
+            exec_kw["benchmark"] = benchmark
         outcome = agent.execute(req.code, req.start, req.end, run_config=run_config, **exec_kw)
     except FileNotFoundError as exc:
         return JSONResponse(status_code=400, content={"detail": BUNDLE_GUIDANCE, "reason": str(exc)})
@@ -214,11 +266,18 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
                 "execution_error": str(exec_error)[-2000:],
             },
         )
+    # 净值序列(策略 vs 基准):供前端收益图;非关键路径,提取失败返回空列表
+    from aquant.agents.orchestrator import _extract_benchmark_series, _extract_portfolio_series
+
     return {
         "passed": True,
         "verdict": verdict.to_dict(),
         "metrics": summary,
         "trades_count": trades_count,
+        "portfolio_series": _extract_portfolio_series(result),
+        "benchmark_series": _extract_benchmark_series(result),
+        "benchmark": benchmark,
+        "benchmark_label": _BENCHMARK_LABELS.get(benchmark or "", benchmark or ""),
     }
 
 
@@ -606,10 +665,15 @@ def _backtest_version(
     request: Request, sid: str, code: str, session: dict[str, Any]
 ) -> dict[str, Any]:
     """回测指定代码并把指标写回会话当前版本;校验不过抛 422 结构化错误。"""
-    from aquant.agents.orchestrator import _extract_metrics, _extract_portfolio_series
+    from aquant.agents.orchestrator import (
+        _extract_benchmark_series,
+        _extract_metrics,
+        _extract_portfolio_series,
+    )
 
     start, end = session["start"], session["end"]
-    run_config = build_run_config(start, end, cash=session.get("cash"))
+    benchmark = _resolve_benchmark(session.get("benchmark"))
+    run_config = build_run_config(start, end, cash=session.get("cash"), benchmark=benchmark)
     verifier = ValidationAgent()
     verdict = verifier.validate(code, run_config)
     if verdict.has_error:
@@ -620,6 +684,8 @@ def _backtest_version(
         exec_kw: dict[str, Any] = {}
         if session.get("cash") is not None:
             exec_kw["cash"] = session["cash"]
+        if benchmark:
+            exec_kw["benchmark"] = benchmark
         outcome = BacktestAgent(_get_runner(request)).execute(
             code, start, end, run_config=run_config, **exec_kw
         )
@@ -631,14 +697,20 @@ def _backtest_version(
         raise HTTPException(status_code=422, detail={"message": outcome["reason"], "verdict": payload})
     metrics = _extract_metrics(outcome["result"], start, end)
     series = _extract_portfolio_series(outcome["result"])
+    benchmark_series = _extract_benchmark_series(outcome["result"])
     current_id = str(session.get("current_version") or "")
     if current_id:
         _get_store(request).update_version(
             sid, current_id,
             metrics=metrics, verdict=verdict.to_dict(),
-            backtest={"portfolio_series": series, "metrics": metrics},
+            backtest={"portfolio_series": series, "benchmark_series": benchmark_series, "metrics": metrics},
         )
-    return {"metrics": metrics, "portfolio_series": series, "verdict": verdict.to_dict()}
+    return {
+        "metrics": metrics,
+        "portfolio_series": series,
+        "benchmark_series": benchmark_series,
+        "verdict": verdict.to_dict(),
+    }
 
 
 @app.get("/api/sessions", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
@@ -704,6 +776,7 @@ def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[st
                 req.text, session["start"], session["end"],
                 llm=llm, runner=runner, experience=experience,
                 cash=session.get("cash"),
+                benchmark=_resolve_benchmark(session.get("benchmark")),
             )
             outcome.setdefault("analysis", "首轮由 Agent 根据需求生成初始策略。")
         else:
@@ -711,6 +784,7 @@ def session_turn(sid: str, req: SessionTurnRequest, request: Request) -> dict[st
                 req.text, current["code"], history, session["start"], session["end"],
                 llm=llm, runner=runner, experience=experience,
                 metrics=current.get("metrics"), cash=session.get("cash"),
+                benchmark=_resolve_benchmark(session.get("benchmark")),
                 backtest=req.backtest,
             )
     except FileNotFoundError as exc:

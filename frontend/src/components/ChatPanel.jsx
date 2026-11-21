@@ -248,8 +248,12 @@ export default function ChatPanel({ notify, onSeedValidate, onSeedStudio }) {
         <div className="chat-result">
           <MetricsCards metrics={result.metrics} />
 
-          {/* 净值曲线:指标卡与校验结论之间;portfolio_series 为 null/空时组件自身不渲染 */}
-          <NetValueChart series={result.portfolio_series} />
+          {/* 收益图(策略净值 vs A股基准):指标卡与校验结论之间;序列为 null/空时组件自身不渲染 */}
+          <NetValueChart
+            series={result.portfolio_series}
+            benchmarkSeries={result.benchmark_series}
+            benchmarkLabel="A股基准(上证指数)"
+          />
 
           {/* K 线(标的行情):默认折叠;展开后自动从生成代码推断标的拉取蜡烛图,
               推断不出(或上次查询报错)时给出输入框让用户填写;空数据只提示不渲染图 */}

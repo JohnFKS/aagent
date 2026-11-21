@@ -18,6 +18,7 @@ import { STUDIO_TEMPLATES, DEFAULT_START, DEFAULT_END } from '../samples.js';
 import CodeEditor from './CodeEditor.jsx';
 import MetricsCards from './MetricsCards.jsx';
 import KlineChart from './KlineChart.jsx';
+import NetValueChart from './NetValueChart.jsx';
 import FindingsList from './FindingsList.jsx';
 import CodeBlock from './CodeBlock.jsx';
 import VerifyResult from './VerifyResult.jsx';
@@ -29,6 +30,20 @@ const LS_DRAFT = 'aquant_studio_draft';
 
 // 默认初始资金:100 万
 const DEFAULT_CASH = '1000000';
+
+// A 股基准选项:value 与后端 /api/backtest 的 benchmark 参数同口径
+// ('none' = 不设基准;缺省 000001.XSHG = 上证指数,bundle 内为真实指数行情)
+const BENCHMARK_OPTIONS = [
+  { value: '000001.XSHG', label: '上证指数' },
+  { value: '000300.XSHG', label: '沪深300' },
+  { value: 'none', label: '不设基准' },
+];
+
+// value → 中文名(收益图图例用)
+function benchmarkLabelOf(value) {
+  const found = BENCHMARK_OPTIONS.find((o) => o.value === value);
+  return found ? found.label : value || '';
+}
 
 // A 股 order_book_id 形态(与 ChatPanel 同口径):
 // 宽松版用于从代码提取,严格版用于校验手动输入
@@ -126,6 +141,7 @@ export default function StudioPanel({ notify, studioSeed }) {
   const [start, setStart] = useState(DEFAULT_START);
   const [end, setEnd] = useState(DEFAULT_END);
   const [cash, setCash] = useState(DEFAULT_CASH);
+  const [benchmark, setBenchmark] = useState('000001.XSHG'); // A股基准(收益图对照线)
   const [advOpen, setAdvOpen] = useState(false); // 高级(保守参数)折叠区
   const [slippage, setSlippage] = useState(''); // 留空 = 平台默认 0.002
   const [volumePercent, setVolumePercent] = useState(''); // 留空 = 平台默认
@@ -318,7 +334,7 @@ export default function StudioPanel({ notify, studioSeed }) {
     setKlineError('');
 
     const overrides = buildOverrides();
-    const payload = { code, start, end, cash: cashNum };
+    const payload = { code, start, end, cash: cashNum, benchmark };
     if (overrides) payload.overrides = overrides;
 
     // 1) 基础回测(必选)
@@ -620,6 +636,22 @@ export default function StudioPanel({ notify, studioSeed }) {
                 aria-label="初始资金"
               />
             </label>
+            <label className="field">
+              <span>A股基准</span>
+              <select
+                className="studio-select"
+                value={benchmark}
+                disabled={busy}
+                onChange={(e) => setBenchmark(e.target.value)}
+                title="收益图将叠加基准净值曲线,便于对照策略相对大盘的表现"
+              >
+                {BENCHMARK_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           {/* 高级(保守参数覆盖)折叠区 */}
@@ -693,9 +725,9 @@ export default function StudioPanel({ notify, studioSeed }) {
         <div className="studio-analyses">
           <div className="studio-settings-title">分析方式(提交时执行勾选项,至少一项)</div>
           <div className="form-row form-row-wrap studio-check-row">
-            <label className="checkbox" title="基础回测为必选项:返回指标卡、策略代码与校验发现">
+            <label className="checkbox" title="基础回测为必选项:返回收益图(策略 vs 基准)、指标卡、策略代码与校验发现">
               <input type="checkbox" checked disabled readOnly />
-              基础回测(/api/backtest)→ 指标 + 代码 + findings
+              基础回测(/api/backtest)→ 收益图 + 指标 + findings
             </label>
             <label className="checkbox" title="分层验证:样本内/样本外对照 + 规则检查 + 随机基准 + 模拟盘清单(两次回测,较慢)">
               <input
@@ -822,7 +854,7 @@ export default function StudioPanel({ notify, studioSeed }) {
           </div>
         )}
 
-        {/* 基础回测:200 → 指标卡 + 校验发现 + 策略代码 */}
+        {/* 基础回测:200 → 收益图(策略 vs 基准)+ 指标卡 + 校验发现 + 策略代码 */}
         {btRes?.kind === 'ok' && (
           <section className="backtest-result">
             <div className="verdict-head">
@@ -831,6 +863,16 @@ export default function StudioPanel({ notify, studioSeed }) {
               </span>
               <span className="verdict-counts mono">成交笔数 {btRes.data.trades_count ?? '—'}</span>
             </div>
+            {/* 收益图:策略净值 + A股基准对照线(未设基准/无数据时只画策略曲线) */}
+            <NetValueChart
+              series={btRes.data.portfolio_series}
+              benchmarkSeries={btRes.data.benchmark_series}
+              benchmarkLabel={
+                btRes.data.benchmark && btRes.data.benchmark !== 'none'
+                  ? `A股基准(${benchmarkLabelOf(btRes.data.benchmark)})`
+                  : ''
+              }
+            />
             <MetricsCards metrics={btRes.data.metrics} />
             {btRes.data.verdict && (
               <>

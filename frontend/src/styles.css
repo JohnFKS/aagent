@@ -721,6 +721,11 @@ input[type='date']:focus {
   margin-left: 6px;
 }
 
+/* 基准曲线图例(A股基准 = 金色实线,与 --warn 曲线同色) */
+.netvalue-legend .legend-line-bm {
+  border-top: 2px solid var(--warn);
+}
+
 /* 图表画布容器:固定高度、圆角、内嵌边框;lightweight-charts 背景透明,由该容器上色 */
 .netvalue-chart-body {
   position: relative;
@@ -760,6 +765,14 @@ input[type='date']:focus {
 .netvalue-tooltip .tip-value {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* 基准净值行(金色,与基准曲线同色系) */
+.netvalue-tooltip .tip-benchmark {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--warn);
   font-weight: 600;
 }
 
@@ -3493,3 +3506,328 @@ input[type='date']:focus {
   background: transparent;
 }
 .btn-danger-ghost:hover { background: var(--up-soft); border-color: var(--up); }
+
+/* ---------- 策略编写指南(GuidePanel) ---------- */
+.guide-wrap {
+  overflow-y: auto;
+  padding-bottom: 40px;
+}
+
+.guide-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 1080px;
+}
+
+.guide-hero .guide-lede {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.guide-hero .guide-lede strong {
+  color: var(--text);
+}
+
+/* 三步工作流 */
+.guide-flow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.guide-flow-step {
+  flex: 1 1 220px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  min-width: 0;
+}
+
+.guide-flow-num {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.guide-flow-title {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.guide-flow-desc {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+.guide-flow-arrow {
+  color: var(--text-faint);
+  font-size: 16px;
+  flex: none;
+}
+
+/* 说明条 */
+.guide-note {
+  margin: 12px 0 4px;
+  padding: 9px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.guide-note strong { color: var(--text); }
+.guide-note .mono {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--panel-inset);
+  font-size: 11.5px;
+}
+
+/* 提示词模板块 */
+.guide-prompt-block {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-inset);
+  overflow: hidden;
+}
+
+.guide-prompt-block.guide-prompt-main {
+  border-color: rgba(58, 162, 255, 0.45);
+  box-shadow: 0 0 0 1px rgba(58, 162, 255, 0.12);
+}
+
+.guide-prompt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-soft);
+  flex-wrap: wrap;
+}
+
+.guide-prompt-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.guide-prompt-hint {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+.guide-prompt-body {
+  margin: 0;
+  max-height: 340px;
+  overflow: auto;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.guide-copy-btn { flex: none; }
+.guide-copy-primary {
+  border-color: rgba(58, 162, 255, 0.5);
+  color: var(--accent);
+}
+.guide-copy-primary:hover { background: var(--accent-soft); }
+
+/* 代码骨架块 */
+.guide-code-block {
+  margin-top: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-inset);
+  overflow: hidden;
+}
+
+.guide-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-soft);
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-wrap: wrap;
+}
+
+.guide-code-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.guide-code {
+  margin: 0;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text);
+  overflow: auto;
+}
+
+/* 步骤列表 */
+.guide-steps-list {
+  margin: 6px 0 0;
+  padding-left: 22px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.9;
+}
+
+.guide-steps-list strong { color: var(--text); }
+
+/* 契约速查双栏 */
+.guide-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+  margin-top: 6px;
+}
+
+.guide-table-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  margin: 4px 0 8px;
+}
+
+.guide-ok-title { color: var(--ok); }
+.guide-bad-title { color: var(--up); }
+
+/* 表格 */
+.guide-table-wrap {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  overflow: auto;
+}
+
+.guide-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.guide-table th {
+  text-align: left;
+  padding: 8px 12px;
+  background: var(--bg-soft);
+  color: var(--text-faint);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+}
+
+.guide-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text-dim);
+  line-height: 1.6;
+  vertical-align: top;
+}
+
+.guide-table tr:last-child td { border-bottom: none; }
+
+.guide-table .guide-cell-key {
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 标的池 */
+.guide-pool {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.guide-pool-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--bg-soft);
+  font-size: 12px;
+}
+
+.guide-pool-item .mono { color: var(--accent); }
+.guide-pool-name { color: var(--text); }
+.guide-pool-note { color: var(--text-faint); font-size: 11px; }
+
+/* 收益图图例演示 */
+.guide-legend-demo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 8px 0 10px;
+}
+
+.guide-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* 自查清单 */
+.guide-checklist {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.guide-checklist li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.guide-check-mark {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: rgba(62, 207, 142, 0.12);
+  color: var(--ok);
+  font-size: 12px;
+  font-weight: 700;
+}
