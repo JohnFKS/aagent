@@ -4,7 +4,8 @@
 // - 右栏:最近一轮回测结果与策略变更 diff;
 // 会话与版本存后端 ~/.aquant/sessions,刷新页面不丢;隐藏 Tab 时保持挂载。
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from '../api.js';
+import { api, newProgressId } from '../api.js';
+import ProgressPanel from './ProgressPanel.jsx';
 import CodeEditor from './CodeEditor.jsx';
 import MetricsCards, { formatValue } from './MetricsCards.jsx';
 import FindingsList from './FindingsList.jsx';
@@ -54,6 +55,8 @@ export default function ConversationPanel({ notify }) {
   const [dirty, setDirty] = useState(false);
   const [viewVid, setViewVid] = useState('');
   const [busy, setBusy] = useState('');
+  const [progressId, setProgressId] = useState('');
+  const [progressActive, setProgressActive] = useState(false);
   const [error, setError] = useState('');
   const [lastResult, setLastResult] = useState(null);
   const [compareFrom, setCompareFrom] = useState('');
@@ -201,6 +204,9 @@ export default function ConversationPanel({ notify }) {
     if (!requestText || busy) return;
     setBusy('turn');
     setError('');
+    const pid = newProgressId();
+    setProgressId(pid);
+    setProgressActive(true);
     try {
       let targetSid = sid;
       if (!targetSid) {
@@ -214,7 +220,7 @@ export default function ConversationPanel({ notify }) {
       const data = await api.sessionTurn(targetSid, {
         text: requestText,
         backtest: backtestAfterTurn,
-      });
+      }, pid);
       setSid(targetSid);
       setSession(data.session);
       setDirty(false);
@@ -270,8 +276,11 @@ export default function ConversationPanel({ notify }) {
     if (!sid || busy) return;
     setBusy('backtest');
     setError('');
+    const pid = newProgressId();
+    setProgressId(pid);
+    setProgressActive(true);
     try {
-      const data = await api.sessionBacktest(sid);
+      const data = await api.sessionBacktest(sid, pid);
       setSession(data.session);
       setLastResult(data);
       notify('success', `回测完成:${metricsLine(data.metrics)}`);
@@ -536,6 +545,9 @@ export default function ConversationPanel({ notify }) {
         </div>
 
         {busy && <div className="conv-busy">{BUSY_LABEL[busy] || '处理中…'}</div>}
+        {progressId && (busy || progressActive) && (
+          <ProgressPanel progressId={progressId} active={progressActive} compact />
+        )}
         {error && <div className="conv-error" role="alert">{error}</div>}
 
         <div className="conv-composer">

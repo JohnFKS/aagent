@@ -15,6 +15,7 @@ import os
 import sys
 
 from aquant.compat import check_rqalpha_version
+from aquant.runner.progress import ProgressWriter
 
 # 哨兵行前缀:主进程 run_backtest 从 stdout 解析本行,拿回运行日志与策略 print
 RUN_META_SENTINEL = "@@AQUANT_RUN_META@@"
@@ -40,7 +41,13 @@ def main() -> None:
     with open(config_file, encoding="utf-8") as f:
         config = json.load(f)
 
+    # 实时进度通道:进度事件文件路径由 run_backtest 注入(未启用时 writer 静默)
+    progress_file = (config.get("runner", {}) or {}).get("progress_file")
+    progress = ProgressWriter(progress_file)
+    progress.emit("stage", "回测子进程启动", data={"stage": "starting", "label": "启动回测引擎", "percent": 0})
+
     check_rqalpha_version()  # 版本不受支持时先失败,避免进入撮合后才崩
+    progress.emit("stage", "版本校验通过", data={"stage": "initializing", "label": "初始化回测环境", "percent": 5})
 
     # ---- 平台提速(结果恒一致):plot=False 时桩化 matplotlib --------------
     # rqalpha_mod_sys_analyser/mod.py 顶层 import .plot.consts → matplotlib 全链
@@ -137,7 +144,10 @@ def main() -> None:
 
         def emit(self, record) -> None:
             t = record.time.strftime("%Y-%m-%d %H:%M:%S") if getattr(record, "time", None) else ""
-            user_lines.append(f"{t} - {record.level_name} - {record.message}")
+            line = f"{t} - {record.level_name} - {record.message}"
+            user_lines.append(line)
+            # 策略 print / logger 实时推送(前端日志面板可即时看到)
+            progress.emit("log", line, level=record.level_name.upper())
 
     _orig_init_logger = rq_logger.init_logger
 
@@ -150,7 +160,12 @@ def main() -> None:
     rq_logger.init_logger = _init_logger_with_capture
 
     try:
+        progress.emit("stage", "开始逐日撮合", data={"stage": "running", "label": "逐日回测中", "percent": 10})
         run_file(strategy_file, config)
+        progress.emit("stage", "回测完成", data={"stage": "finalizing", "label": "汇总回测结果", "percent": 95})
+    except BaseException as exc:
+        progress.emit("error", f"回测异常:{type(exc).__name__}: {exc}", level="ERROR")
+        raise
     finally:
         captured = user_lines[-500:]
         # 平台日志 mod 的落盘产物(log_file/holdings_file 由 run_backtest 注入 mod 配置)

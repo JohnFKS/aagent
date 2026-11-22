@@ -9,8 +9,9 @@
 // - 错误:422 校验拦截(verdict findings)/ 400 bundle 缺失指引 / 502 LLM 故障 /
 //   429·401·403 闸门,均为中文友好错误条;前端超时 900s,运行中显示已用时秒数。
 import { useEffect, useState } from 'react';
-import { api } from '../api.js';
+import { api, newProgressId } from '../api.js';
 import { formatValue } from './MetricsCards.jsx';
+import ProgressPanel from './ProgressPanel.jsx';
 import FindingsList from './FindingsList.jsx';
 
 // 轮数可选项(后端约定 1~5,前端提供 1/2/3;默认 2)
@@ -115,6 +116,8 @@ export default function OptimizePanel({
 }) {
   const [rounds, setRounds] = useState(String(DEFAULT_ROUNDS));
   const [loading, setLoading] = useState(false);
+  const [progressId, setProgressId] = useState('');
+  const [progressActive, setProgressActive] = useState(false);
   const [elapsed, setElapsed] = useState(0); // 已用时(秒)
   const [result, setResult] = useState(null); // /api/optimize 200 响应
   const [fail, setFail] = useState(null); // {kind:'rejected'|'error', detail, status, verdict}
@@ -152,8 +155,11 @@ export default function OptimizePanel({
     setSrcCode(code);
     setLoading(true);
     onBusyChange?.(true);
+    const pid = newProgressId();
+    setProgressId(pid);
+    setProgressActive(true);
     try {
-      const data = await api.optimize(payload);
+      const data = await api.optimize(payload, pid);
       setResult(data || {});
       if (data?.improved) {
         notify('success', `AI 优化完成:已找到更优版本(耗时 ${data?.elapsed_seconds ?? '—'} 秒)。`);
@@ -244,6 +250,11 @@ export default function OptimizePanel({
           </span>
         )}
       </div>
+
+      {/* 实时进度与日志:优化过程含多次回测,可实时查看各阶段 */}
+      {progressId && (loading || progressActive) && (
+        <ProgressPanel progressId={progressId} active={progressActive} compact />
+      )}
 
       {/* 前端预检类错误(本地输入问题,非后端响应) */}
       {fail?.status === 0 && (

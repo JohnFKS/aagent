@@ -24,6 +24,8 @@ from rqalpha.const import SIDE
 from rqalpha.core.events import EVENT
 from rqalpha.interface import AbstractMod
 
+from aquant.runner.progress import ProgressWriter
+
 
 def _ts(env) -> str:
     """回测交易时间戳 'YYYY-MM-DD HH:MM'。"""
@@ -48,12 +50,21 @@ class PlatformLogMod(AbstractMod):
         self._daily_holdings: list[dict] = []
         self._prev_total: float | None = None
         self._init_done = False
+        self._progress = ProgressWriter(None)
+        self._trading_day_count = 0
+        self._total_days: int | None = None
 
     # ---- 生命周期 --------------------------------------------------------
     def start_up(self, env, mod_config) -> None:
         self._env = env
         self._log_file = getattr(mod_config, "log_file", "")
         self._holdings_file = getattr(mod_config, "holdings_file", "")
+        self._progress = ProgressWriter(getattr(mod_config, "progress_file", ""))
+        try:
+            total = getattr(mod_config, "total_trading_days", None)
+            self._total_days = int(total) if total else None
+        except (TypeError, ValueError):
+            self._total_days = None
         bus = env.event_bus
         for event_type, handler in (
             (EVENT.POST_SYSTEM_INIT, self._on_post_system_init),
@@ -74,14 +85,18 @@ class PlatformLogMod(AbstractMod):
         self._flush()
 
     # ---- 工具 ------------------------------------------------------------
+    def _append(self, line: str, level: str) -> None:
+        self._lines.append(line)
+        self._progress.emit("log", line, level=level)  # 实时推送,不阻塞回测
+
     def _info(self, message: str) -> None:
-        self._lines.append(f"{_ts(self._env)} - INFO  - {message}")
+        self._append(f"{_ts(self._env)} - INFO  - {message}", "INFO")
 
     def _warn(self, message: str) -> None:
-        self._lines.append(f"{_ts(self._env)} - WARNING - {message}")
+        self._append(f"{_ts(self._env)} - WARNING - {message}", "WARNING")
 
     def _divider(self) -> None:
-        self._lines.append(f"{_ts(self._env)} - INFO  - " + "=" * 60)
+        self._append(f"{_ts(self._env)} - INFO  - " + "=" * 60, "INFO")
 
     def _flush(self) -> None:
         if self._log_file:
@@ -227,10 +242,11 @@ class PlatformLogMod(AbstractMod):
         )
         for r in struct_rows:
             pnl_pct = (r["close"] / r["avg_price"] - 1) * 100 if r["avg_price"] else 0.0
-            self._lines.append(
+            self._append(
                 f"  {r['oid']}({r['name']}) {r['quantity']:g}股 成本 {r['avg_price']:,.3f} "
                 f"现价 {r['close']:,.3f} 市值 {_money(r['market_value'])} "
-                f"浮盈 {pnl_pct:+.2f}%"
+                f"浮盈 {pnl_pct:+.2f}%",
+                "INFO",
             )
         self._prev_total = total
         # 结构化每日持仓&收益(前端面板数据源)
@@ -244,6 +260,18 @@ class PlatformLogMod(AbstractMod):
             "daily_returns": float(portfolio.daily_returns),
             "total_returns": float(portfolio.total_returns),
         })
+        # 实时进度:每个交易日收盘推送当前日期/已完成天数/百分比
+        self._trading_day_count += 1
+        pct = 10 + 85 * self._trading_day_count / self._total_days if self._total_days else None
+        prog: dict = {
+            "current_date": f"{env.trading_dt:%Y-%m-%d}",
+            "done_days": self._trading_day_count,
+        }
+        if self._total_days:
+            prog["total_days"] = self._total_days
+        if pct is not None:
+            prog["percent"] = round(min(pct, 95), 1)
+        self._progress.emit("progress", f"已完成第 {self._trading_day_count} 个交易日", data=prog)
         # 性能:日志/持仓缓冲在内存累积,仅在 tear_down 统一落盘
         # (每日全量重写是 O(n²) I/O,长回测下显著拖慢)
 

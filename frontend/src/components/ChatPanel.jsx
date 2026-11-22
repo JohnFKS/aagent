@@ -4,8 +4,9 @@
 // - 结果区:指标卡片 / 净值曲线 / 可折叠"K 线(标的行情)" / verdict findings /
 //   可折叠生成代码 / "查看完整报告"弹层(轻量 Markdown 渲染)。
 import { useEffect, useState } from 'react';
-import { api } from '../api.js';
+import { api, newProgressId } from '../api.js';
 import { SAMPLE_REQUIREMENT, DEFAULT_START, DEFAULT_END } from '../samples.js';
+import ProgressPanel from './ProgressPanel.jsx';
 import StepProgress from './StepProgress.jsx';
 import MetricsCards from './MetricsCards.jsx';
 import NetValueChart from './NetValueChart.jsx';
@@ -33,6 +34,8 @@ export default function ChatPanel({ notify, onSeedValidate, onSeedStudio }) {
   const [start, setStart] = useState(DEFAULT_START);
   const [end, setEnd] = useState(DEFAULT_END);
   const [loading, setLoading] = useState(false);
+  const [progressId, setProgressId] = useState('');
+  const [progressActive, setProgressActive] = useState(false);
   // /api/chat 的返回:被拒/生成失败时也是 200,rejected/error 字段判断语义
   const [result, setResult] = useState(null);
   const [error, setError] = useState(''); // 网络/HTTP 层错误条
@@ -76,8 +79,11 @@ export default function ChatPanel({ notify, onSeedValidate, onSeedStudio }) {
     setResult(null);
     setShowReport(false);
     setLoading(true);
+    const pid = newProgressId();
+    setProgressId(pid);
+    setProgressActive(true);
     try {
-      const data = await api.chat({ text: text.trim(), start, end });
+      const data = await api.chat({ text: text.trim(), start, end }, pid);
       setResult(data || {});
     if (data?.bundle_extension?.extended) {
         const ext = data.bundle_extension;
@@ -241,6 +247,11 @@ export default function ChatPanel({ notify, onSeedValidate, onSeedStudio }) {
             ✕
           </button>
         </div>
+      )}
+
+      {/* 实时进度与日志:请求进行中及完成后回看 */}
+      {progressId && (loading || progressActive) && (
+        <ProgressPanel progressId={progressId} active={progressActive} compact />
       )}
 
       {/* 步骤进度条(常驻:未请求时为 pending) */}

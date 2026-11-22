@@ -13,7 +13,8 @@
 // - 提交按勾选项顺序执行,loading 分步展示;422 拦截条 + findings、400 bundle 指引、
 //   超时友好提示。顶部说明条强调:所有回测仍经四层校验(保守参数强制)。
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api } from '../api.js';
+import { api, newProgressId } from '../api.js';
+import ProgressPanel from './ProgressPanel.jsx';
 import { STUDIO_TEMPLATES, DEFAULT_START, DEFAULT_END } from '../samples.js';
 import CodeEditor from './CodeEditor.jsx';
 import MetricsCards from './MetricsCards.jsx';
@@ -166,6 +167,9 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
   const [activeJobId, setActiveJobId] = useState('');
   const [cancelling, setCancelling] = useState(false);
   const activeJobRef = useRef('');
+  // 实时进度追踪 id:基础回测/后台回测提交时生成,传给 ProgressPanel 轮询
+  const [progressId, setProgressId] = useState('');
+  const [progressActive, setProgressActive] = useState(false);
   // AI 优化进行中(OptimizePanel 反向通知):与主分析双向互斥,避免两个长任务并发
   const [optBusy, setOptBusy] = useState(false);
 
@@ -316,9 +320,12 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
     const payload = buildPayload();
     if (!payload) return;
     setError('');
+    const pid = newProgressId();
+    setProgressId(pid);
+    setProgressActive(true);
     try {
-      const data = await api.submitBacktestJob(payload);
-      notify('success', `后台回测已提交(job_id: ${data?.job_id || '—'}),到「回测记录」查看进度与结果。`);
+      const data = await api.submitBacktestJob(payload, pid);
+      notify('success', `后台回测已提交(job_id: ${data?.job_id || '—'}),下方实时进度与「回测记录」均可查看。`);
       if (typeof onJobsSubmitted === 'function') onJobsSubmitted();
     } catch (e) {
       setError(`后台回测提交失败:${e.message}`);
@@ -432,8 +439,11 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
     // 1) 基础回测(必选)——提交后台任务并轮询,运行中可「终止回测」
     let blocked = false;
     setPhase('basic');
+    const pid = newProgressId();
+    setProgressId(pid);
+    setProgressActive(true);
     try {
-      const submitted = await api.submitBacktestJob(payload);
+      const submitted = await api.submitBacktestJob(payload, pid);
       const jid = submitted?.job_id;
       if (!jid) throw new Error('后端未返回 job_id,无法跟踪基础回测。');
       activeJobRef.current = jid;
@@ -492,8 +502,11 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
     // 2) 分层验证(可选;两次回测,较慢)
     if (!blocked && doVerify) {
       setPhase('verify');
+      const verifyPid = newProgressId();
+      setProgressId(verifyPid);
+      setProgressActive(true);
       try {
-        const data = await api.verify(payload);
+        const data = await api.verify(payload, verifyPid);
         setVerifyRes(data || {});
         const st = String(data?.status || '').toLowerCase();
         if (st === 'pass') notify('success', '分层验证完成:全部检查通过。');
@@ -600,6 +613,10 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
     setSlippage('');
     setVolumePercent('');
     setAdvOpen(false);
+    setProgressId('');
+    setProgressActive(false);
+    activeJobRef.current = '';
+    setActiveJobId('');
   }
 
   // 超时/连接类错误附加场景提示
@@ -931,6 +948,11 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
             Ctrl / Cmd + Enter 快捷执行;基础回测运行中可点「终止回测」;后台回测到「回测记录」查看
           </span>
         </div>
+
+        {/* 实时进度与日志(基础回测/后台回测运行中及完成后回看) */}
+        {progressId && (running || progressActive) && (
+          <ProgressPanel progressId={progressId} active={progressActive} />
+        )}
 
         {/* 分步进度 */}
         {(running || hasAnyResult) && (

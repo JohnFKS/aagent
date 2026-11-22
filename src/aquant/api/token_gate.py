@@ -59,13 +59,17 @@ _SCOPE_LEVEL: dict[str, int] = {"readonly": 1, "readwrite": 2}
 SCOPE_ROUTES: dict[str, tuple[str, ...]] = {
     # /api/kline(K 线行情,GET 只读)为 readonly 新登记:行情查询无需写权限
     # /api/backtests 的 GET(列表/详情)为 readonly,POST(提交/取消)为 readwrite。
-    "readonly": ("/api/validate", "/api/health", "/api/kline", "/api/backtests", "/api/backtests/*"),
+    "readonly": (
+        "/api/validate", "/api/health", "/api/kline",
+        "/api/backtests", "/api/backtests/*", "/api/progress",
+    ),
     "readwrite": (
         "/api/validate",
         "/api/health",
         "/api/backtest",
         "/api/backtests",
         "/api/backtests/*",
+        "/api/progress",
         "/api/chat",
         "/api/arena",
         "/api/kline",

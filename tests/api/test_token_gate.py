@@ -356,7 +356,8 @@ class TestScopeRuleTable:
         # /api/optimize(AI 自动优化闭环)登记进 readwrite(触发 LLM 与回测,非只读)
         # /api/backtests 的 GET(列表/详情)归 readonly,POST(提交/取消)归 readwrite
         assert set(SCOPE_ROUTES["readonly"]) == {
-            "/api/validate", "/api/health", "/api/kline", "/api/backtests", "/api/backtests/*",
+            "/api/validate", "/api/health", "/api/kline",
+            "/api/backtests", "/api/backtests/*", "/api/progress",
         }
         assert set(SCOPE_ROUTES["readwrite"]) == {
             "/api/validate",
@@ -364,6 +365,7 @@ class TestScopeRuleTable:
             "/api/backtest",
             "/api/backtests",
             "/api/backtests/*",
+            "/api/progress",
             "/api/chat",
             "/api/arena",
             "/api/kline",

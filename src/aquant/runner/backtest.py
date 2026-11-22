@@ -90,6 +90,7 @@ def run_backtest(
     strategy_name: str = "platform_strategy",
     timeout: int = 600,
     cancel_event: threading.Event | None = None,
+    progress_id: str | None = None,
 ) -> BacktestResult:
     """校验并执行一次日线回测。
 
@@ -97,8 +98,17 @@ def run_backtest(
     :param start/end: 'YYYY-MM-DD'
     :param bundle_path: RQAlpha bundle 目录(aquant.data.bundle.build_bundle 产物)
     :param mod_overrides: 用户 mod 覆盖(激进值会被 Layer 1 拦截)
+    :param progress_id: 进度追踪 id;None 时读当前 ContextVar(由 API 的 X-Progress-Id 注入),
+        仍为 None 表示不追踪。追踪时 worker 实时写事件文件,主进程汇总到 registry。
     """
     t0 = time.time()
+    from aquant.runner.progress import (
+        ProgressReader, current_progress_id, get_registry,
+    )
+
+    pid = progress_id or current_progress_id()
+    registry = get_registry()
+    state = registry.start(pid) if pid else None
     bundle_path = Path(bundle_path or default_bundle_path())
     if not bundle_path.exists():
         raise FileNotFoundError(
@@ -113,11 +123,28 @@ def run_backtest(
         json.dumps(config, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()[:16]
 
+    if state:
+        state.add("stage", "策略静态校验", data={"stage": "validating", "label": "校验策略代码", "percent": 2})
     verdict = validate_strategy(code, config)
     unsafe_env = os.environ.get("AQUANT_ALLOW_UNSAFE") == "1"
     if verdict.has_error and not unsafe_env:
+        if state:
+            registry.finish(pid, "failed", "策略校验未通过")
         raise StrategyValidationError(verdict)
     unsafe = verdict.has_error and unsafe_env
+    if state:
+        state.add("stage", "校验通过,准备数据", data={"stage": "validated", "label": "校验通过", "percent": 5})
+
+    # 区间内交易日总数(供 mod 计算进度百分比);读取失败不影响回测
+    total_days: int | None = None
+    try:
+        import numpy as np
+
+        cal = np.load(bundle_path / "trading_dates.npy")
+        s, e = int(start.replace("-", "")), int(end.replace("-", ""))
+        total_days = int(((cal >= s) & (cal <= e)).sum()) or None
+    except Exception:
+        pass
 
     with tempfile.TemporaryDirectory(prefix="aquant-run-") as tmp:
         tmp_dir = Path(tmp)
@@ -130,12 +157,20 @@ def run_backtest(
         # worker 收尾经哨兵行回传主进程
         log_file = tmp_dir / "run_log.txt"
         holdings_file = tmp_dir / "daily_holdings.json"
-        config.setdefault("mod", {})["platform_log"] = {
+        progress_file = tmp_dir / "progress.jsonl" if state else None
+        platform_log_cfg = {
             "enabled": True,
             "lib": "aquant.runner.platform_log_mod",
             "log_file": str(log_file),
             "holdings_file": str(holdings_file),
         }
+        if progress_file:
+            platform_log_cfg["progress_file"] = str(progress_file)
+            if total_days:
+                platform_log_cfg["total_trading_days"] = total_days
+        config.setdefault("mod", {})["platform_log"] = platform_log_cfg
+        if progress_file:
+            config.setdefault("runner", {})["progress_file"] = str(progress_file)
         cfg_file = tmp_dir / "config.json"
         cfg_file.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
 
@@ -144,11 +179,20 @@ def run_backtest(
         # 管道缓冲区满会令其阻塞在 pipe_write(表现为回测永不结束)。临时文件无此问题。
         stdout_file = tmp_dir / "worker_stdout.txt"
         stderr_file = tmp_dir / "worker_stderr.txt"
+        reader = ProgressReader(progress_file)
         with open(stdout_file, "wb") as out_f, open(stderr_file, "wb") as err_f:
             proc = subprocess.Popen(cmd, stdout=out_f, stderr=err_f)
             try:
                 deadline = time.monotonic() + timeout
                 while proc.poll() is None:
+                    # 汇总 worker 实时写入的进度/日志事件
+                    if state:
+                        for ev in reader.read_new():
+                            state.add(
+                                ev.get("type", "log"), ev.get("message", ""),
+                                level=ev.get("level", "INFO"), data=ev.get("data"),
+                                ts=ev.get("ts"),
+                            )
                     if cancel_event is not None and cancel_event.is_set():
                         proc.terminate()
                         try:
@@ -156,22 +200,41 @@ def run_backtest(
                         except subprocess.TimeoutExpired:
                             proc.kill()
                             proc.wait()
+                        if state:
+                            registry.finish(pid, "cancelled", "用户终止了回测")
                         raise BacktestCancelled("用户终止了回测")
                     if time.monotonic() >= deadline:
                         proc.kill()
                         proc.wait()
+                        if state:
+                            registry.finish(pid, "failed", f"回测超时({timeout}s)")
                         raise subprocess.TimeoutExpired(cmd, timeout)
                     time.sleep(0.05)
             except BaseException:
                 if proc.poll() is None:
                     proc.kill()
                     proc.wait()
+                if state and state.status == "running":
+                    registry.finish(pid, "failed", "回测进程异常退出")
                 raise
+        # 读取进程退出前写入的最后一批事件(完成/错误阶段)
+        if state:
+            for ev in reader.read_new():
+                state.add(
+                    ev.get("type", "log"), ev.get("message", ""),
+                    level=ev.get("level", "INFO"), data=ev.get("data"),
+                    ts=ev.get("ts"),
+                )
         stdout = stdout_file.read_text(encoding="utf-8", errors="replace")
         stderr = stderr_file.read_text(encoding="utf-8", errors="replace")
         if proc.returncode != 0 or not result_file.exists():
             stderr_tail = "\n".join((stderr or "").strip().splitlines()[-25:])
+            if state:
+                registry.finish(pid, "failed", stderr_tail[-500:] or "回测进程失败")
             raise BacktestExecutionError(proc.returncode, stderr_tail)
+        if state:
+            state.add("stage", "进度汇总完成", data={"stage": "done", "label": "回测完成", "percent": 100})
+            registry.finish(pid, "completed")
 
         with open(result_file, "rb") as f:
             raw = pickle.load(f)

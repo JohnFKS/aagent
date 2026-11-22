@@ -10,6 +10,7 @@ import MonthlyReturnsTable from './MonthlyReturnsTable.jsx';
 import TradesTable from './TradesTable.jsx';
 import DailyHoldingsPanel from './DailyHoldingsPanel.jsx';
 import RunLogPanel from './RunLogPanel.jsx';
+import ProgressPanel from './ProgressPanel.jsx';
 
 const STATUS = {
   running: { label: '进行中', cls: 'st-running' },
@@ -227,6 +228,12 @@ export default function BacktestJobsPanel({ notify }) {
               <span className="bar-icon">✗</span><span>{detail.error}</span>
             </div>
           )}
+
+          {/* 进行中/已结束任务的实时进度与日志(后台任务的 progress_id = job_id) */}
+          <ProgressPanel
+            progressId={detail.progress_id || detail.id}
+            active={detail.status === 'running'}
+          />
 
           {result && (
             <div className="backtest-result">

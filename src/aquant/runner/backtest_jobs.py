@@ -34,6 +34,7 @@ class BacktestJob:
     error_verdict: Any = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = field(default=None, repr=False)
+    progress_id: str | None = None
 
     @property
     def elapsed_seconds(self) -> float | None:
@@ -61,6 +62,7 @@ class BacktestJob:
             "request": self.request,
             "result": self.result,
             "error_verdict": self.error_verdict,
+            "progress_id": self.progress_id or self.id,
         }
 
 
@@ -74,9 +76,11 @@ class BacktestJobManager:
         self,
         request: dict[str, Any],
         runner: Callable[[dict[str, Any], threading.Event], Any],
+        job_id: str | None = None,
     ) -> BacktestJob:
-        job = BacktestJob(id=f"bt_{uuid.uuid4().hex[:10]}", request=dict(request))
+        job = BacktestJob(id=job_id or f"bt_{uuid.uuid4().hex[:10]}", request=dict(request))
         job.started_at = _now()
+        job.progress_id = request.get("_progress_id")
 
         def target() -> None:
             try:

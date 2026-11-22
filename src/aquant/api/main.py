@@ -43,6 +43,24 @@ from aquant.verify.arena import run_arena
 app = FastAPI(title="AQ-Platform API", version=__version__)
 app.include_router(data_admin_router)
 
+
+@app.middleware("http")
+async def _progress_id_middleware(request: Request, call_next):
+    """把 X-Progress-Id 请求头写入 ContextVar,供任意回测入口的 run_backtest 读取。
+
+    前端发起回测请求时生成 id 并携带此头,即可用 GET /api/progress/{id}?since=N
+    实时跟踪进度与日志(无需改每个端点的签名)。
+    """
+    from aquant.runner.progress import (
+        PROGRESS_HEADER, reset_progress_id, set_progress_id,
+    )
+
+    token = set_progress_id(request.headers.get(PROGRESS_HEADER) or None)
+    try:
+        return await call_next(request)
+    finally:
+        reset_progress_id(token)
+
 # 依赖注入挂载点:测试可整体替换;为 None 时按需惰性构造
 # (llm: LLMClient;runner: agents.backtest_agent.Runner)
 app.state.llm = None
@@ -374,6 +392,7 @@ def _run_backtest_job(payload: dict[str, Any], cancel_event):
         payload["code"], payload["start"], payload["end"],
         strategy_name=payload.get("strategy_name") or "platform_strategy",
         cancel_event=cancel_event,
+        progress_id=payload.get("_progress_id"),
         **kw,
     )
 
@@ -409,8 +428,22 @@ def _job_result_payload(result: Any, request_payload: dict[str, Any]) -> dict[st
 @app.post("/api/backtests", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
 def submit_backtest_job(req: BacktestRequest, request: Request) -> dict[str, Any]:
     """提交后台回测任务,立即返回 job_id;结果通过 /api/backtests/{id} 查询。"""
-    job = _get_backtest_jobs(request).submit(req.model_dump(), _run_backtest_job)
-    return {"job_id": job.id, "status": job.status, "created_at": job.created_at}
+    import uuid
+
+    from aquant.runner.progress import PROGRESS_HEADER
+
+    payload = req.model_dump()
+    # 后台线程不继承 ContextVar:显式生成 progress_id 并带入任务 payload。
+    # 前端带 X-Progress-Id 时用其值(便于提交前后统一跟踪),否则用 job_id。
+    pid = request.headers.get(PROGRESS_HEADER) or f"bt_{uuid.uuid4().hex[:10]}"
+    payload["_progress_id"] = pid
+    job = _get_backtest_jobs(request).submit(payload, _run_backtest_job, job_id=pid)
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "created_at": job.created_at,
+        "progress_id": pid,
+    }
 
 
 @app.get("/api/backtests", dependencies=[Depends(require_mcp_token(scope="readonly"))])
@@ -436,6 +469,21 @@ def cancel_backtest_job(jid: str, request: Request) -> dict[str, Any]:
     """终止运行中的后台回测;已结束的任务返回 ok=false。"""
     ok = _get_backtest_jobs(request).cancel(jid)
     return {"ok": ok, "id": jid}
+
+
+@app.get("/api/progress/{pid}", dependencies=[Depends(require_mcp_token(scope="readonly"))])
+def get_progress(pid: str, since: int = 0) -> dict[str, Any]:
+    """回测实时进度与日志(增量):since 为上次拿到的最大 event seq,仅返回更新的事件。
+
+    前端发起任意回测请求时携带 X-Progress-Id: <pid>,即可边跑边查;
+    未追踪或已过期的 id 返回 404。
+    """
+    from aquant.runner.progress import get_registry
+
+    snapshot = get_registry().snapshot(pid, since)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail=f"进度记录不存在或已过期:{pid}")
+    return snapshot
 
 
 def _register_runner_exception_handler() -> None:

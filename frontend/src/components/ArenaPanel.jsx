@@ -6,8 +6,9 @@
 // - 前端预检:候选名非空且唯一、代码非空、区间合法(后端 pydantic / 400 校验兜底);
 // - 结果区:ArenaResult 子组件渲染排名表 + 每候选状态徽章与可展开详情。
 import { useState } from 'react';
-import { api } from '../api.js';
+import { api, newProgressId } from '../api.js';
 import { ARENA_SAMPLES, DEFAULT_START, DEFAULT_END } from '../samples.js';
+import ProgressPanel from './ProgressPanel.jsx';
 import ArenaResult from './ArenaResult.jsx';
 
 const MAX_CANDIDATES = 6;
@@ -22,6 +23,8 @@ export default function ArenaPanel({ notify }) {
   const [start, setStart] = useState(DEFAULT_START);
   const [end, setEnd] = useState(DEFAULT_END);
   const [loading, setLoading] = useState(false); // 开赛请求中
+  const [progressId, setProgressId] = useState('');
+  const [progressActive, setProgressActive] = useState(false);
   const [result, setResult] = useState(null); // /api/arena 响应
   const [error, setError] = useState('');
 
@@ -79,8 +82,11 @@ export default function ArenaPanel({ notify }) {
     setError('');
     setResult(null);
     setLoading(true);
+    const pid = newProgressId();
+    setProgressId(pid);
+    setProgressActive(true);
     try {
-      const data = await api.arena({ candidates: cands, start, end });
+      const data = await api.arena({ candidates: cands, start, end }, pid);
       setResult(data || {});
       const ranked = data?.ranked_count ?? 0;
       const total = data?.count ?? cands.length;
@@ -215,6 +221,9 @@ export default function ArenaPanel({ notify }) {
               并行回测中…候选需先过 Layer 1 校验,再并行回测(候选数 × 回测耗时,约 10~60 秒)。
             </span>
           </div>
+        )}
+        {progressId && (loading || progressActive) && (
+          <ProgressPanel progressId={progressId} active={progressActive} compact />
         )}
         {!loading && !result && (
           <div className="arena-empty">

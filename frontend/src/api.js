@@ -47,16 +47,24 @@ function extractDetail(data) {
   return '';
 }
 
+// 生成回测进度追踪 id(前端发起回测时统一携带,用于实时查进度/日志)
+export function newProgressId() {
+  return `pg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 // 底层请求:返回解析后的 JSON;任何失败都抛 ApiError(中文消息)
-async function request(path, { method = 'GET', body, timeout = DEFAULT_TIMEOUT } = {}) {
+async function request(path, { method = 'GET', body, timeout = DEFAULT_TIMEOUT, progressId } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  const headers = {};
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (progressId) headers['X-Progress-Id'] = progressId;
   let res;
   let raw = '';
   try {
     res = await fetch(path, {
       method,
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      headers: Object.keys(headers).length ? headers : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
@@ -100,24 +108,25 @@ export const api = {
   health: () => request('/api/health', { method: 'GET', timeout: 8000 }),
   // POST /api/chat {text,start,end} → 编排管线结果(steps/code/verdict/metrics/report)
   // 真实 LLM 单次 120s + 最多 2 次重试与退避,最坏约 366s,留缓冲到 7 分钟
-  chat: (payload) => request('/api/chat', { method: 'POST', body: payload, timeout: 420000 }),
+  chat: (payload, progressId) => request('/api/chat', { method: 'POST', body: payload, timeout: 420000, progressId }),
   // POST /api/validate {code,start?,end?} → Layer 1 校验结论 + 中文摘要
   validate: (payload) => request('/api/validate', { method: 'POST', body: payload }),
+  // 回测相关端点第二参数可传 progressId(newProgressId() 生成),后端据此实时记录进度/日志
   // POST /api/backtest {code,start,end,cash?,benchmark?,overrides?} →
   // 200 指标+收益图序列 / 422 拦截(verdict)。区间超出 bundle 时后端会自动
   // 拉取最新行情重建数据(首次触发约 30~90s),超时放宽到 300s。
-  backtest: (payload) => request('/api/backtest', { method: 'POST', body: payload, timeout: 300000 }),
+  backtest: (payload, progressId) => request('/api/backtest', { method: 'POST', body: payload, timeout: 300000, progressId }),
   // POST /api/verify {code,start,end,is_ratio?,cash?,benchmark?,overrides?} →
   // 分层验证(Layer 4,样本内/样本外对照 + checks + 随机基准 + 模拟盘清单)。
   // 内部要跑两次回测(约 5~20 秒),超时放宽到 300s。
-  verify: (payload) => request('/api/verify', { method: 'POST', body: payload, timeout: 300000 }),
+  verify: (payload, progressId) => request('/api/verify', { method: 'POST', body: payload, timeout: 300000, progressId }),
   // POST /api/arena {candidates(1~6),start,end,cash?} → 多策略竞技场排名
   // (候选数 × 回测耗时,真实 bundle 回测较慢,超时放宽到 600s)
-  arena: (payload) => request('/api/arena', { method: 'POST', body: payload, timeout: 600000 }),
+  arena: (payload, progressId) => request('/api/arena', { method: 'POST', body: payload, timeout: 600000, progressId }),
   // POST /api/optimize {code,start,end,rounds?(1~5,默认2),cash?,overrides?} →
   // AI 自动优化:先跑基线回测,再循环"LLM 分析 → 改写 → 回测对照"N 轮,返回最优版本与演进史。
   // 每轮 ≈ 1 次 LLM 生成(30~120s)+ 2 次回测;rounds=2 常见 2~5 分钟 → 超时放宽到 900s。
-  optimize: (payload) => request('/api/optimize', { method: 'POST', body: payload, timeout: 900000 }),
+  optimize: (payload, progressId) => request('/api/optimize', { method: 'POST', body: payload, timeout: 900000, progressId }),
   // GET /api/kline?oid=&start=&end= → K 线行情(真实价日线,最多 500 根,超出后端抽样)
   // GET + query 参数;oid 必填,start/end('YYYY-MM-DD')可选,缺省 120s 超时
   kline: ({ oid, start, end } = {}) => {
@@ -137,14 +146,14 @@ export const api = {
     { method: 'DELETE' },
   ),
   // 每轮 = LLM 改码 + 回测,超时放宽到 900s(与 MCP 侧一致)
-  sessionTurn: (sid, payload) => request(`/api/sessions/${encodeURIComponent(sid)}/turns`, {
-    method: 'POST', body: payload, timeout: 900000,
+  sessionTurn: (sid, payload, progressId) => request(`/api/sessions/${encodeURIComponent(sid)}/turns`, {
+    method: 'POST', body: payload, timeout: 900000, progressId,
   }),
-  sessionEditCode: (sid, payload) => request(`/api/sessions/${encodeURIComponent(sid)}/code`, {
-    method: 'PUT', body: payload, timeout: 300000,
+  sessionEditCode: (sid, payload, progressId) => request(`/api/sessions/${encodeURIComponent(sid)}/code`, {
+    method: 'PUT', body: payload, timeout: 300000, progressId,
   }),
-  sessionBacktest: (sid) => request(`/api/sessions/${encodeURIComponent(sid)}/backtest`, {
-    method: 'POST', timeout: 300000,
+  sessionBacktest: (sid, progressId) => request(`/api/sessions/${encodeURIComponent(sid)}/backtest`, {
+    method: 'POST', timeout: 300000, progressId,
   }),
   sessionRollback: (sid, payload) => request(`/api/sessions/${encodeURIComponent(sid)}/rollback`, {
     method: 'POST', body: payload,
@@ -192,8 +201,12 @@ export const api = {
   testLlmSettings: (payload) => request('/api/settings/llm/test', { method: 'POST', body: payload, timeout: 180000 }),
   resetLlmSettings: () => request('/api/settings/llm', { method: 'DELETE' }),
 
+  // ---- 实时进度与日志:任意回测请求带 X-Progress-Id 后,用此端点增量拉取 ----
+  // since = 上次拿到的最大 event seq,仅返回更新的事件(轮询友好)
+  progress: (pid, since = 0) => request(`/api/progress/${encodeURIComponent(pid)}?since=${since}`, { method: 'GET' }),
+
   // ---- 后台回测与回测记录(提交即返回 job_id,结果异步查询)----
-  submitBacktestJob: (payload) => request('/api/backtests', { method: 'POST', body: payload }),
+  submitBacktestJob: (payload, progressId) => request('/api/backtests', { method: 'POST', body: payload, progressId }),
   backtestJobs: (status) => request(
     `/api/backtests${status ? `?status=${encodeURIComponent(status)}` : ''}`,
     { method: 'GET' },
