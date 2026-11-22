@@ -9,6 +9,7 @@ import ArenaPanel from './components/ArenaPanel.jsx';
 import StudioPanel from './components/StudioPanel.jsx';
 import GuidePanel from './components/GuidePanel.jsx';
 import DataManagePanel from './components/DataManagePanel.jsx';
+import BacktestJobsPanel from './components/BacktestJobsPanel.jsx';
 import SettingsPanel from './components/SettingsPanel.jsx';
 import { api } from './api.js';
 
@@ -20,6 +21,7 @@ const TABS = [
   { key: 'conversation', label: '多轮工作台', hint: '持续迭代同一策略', icon: 'layers' },
   { key: 'arena', label: '策略竞技场', hint: '多候选同场回测', icon: 'arena' },
   { key: 'studio', label: '策略工坊', hint: '手动模式与 AI 优化', icon: 'studio' },
+  { key: 'jobs', label: '回测记录', hint: '后台回测进度 / 结果 / 终止', icon: 'jobs' },
   { key: 'data', label: '数据管理', hint: '本地数据池盘点/预下载/删除', icon: 'data' },
 ];
 
@@ -30,6 +32,7 @@ function NavIcon({ name }) {
   if (name === 'chat') return <svg {...common}><path d="M3.5 4.5h13v9h-7l-4 3v-3h-2z" /></svg>;
   if (name === 'layers') return <svg {...common}><path d="M10 2.8 17 6l-7 3.2L3 6z" /><path d="m3 10 7 3.2L17 10M3 14l7 3.2L17 14" /></svg>;
   if (name === 'arena') return <svg {...common}><path d="M6 3h8v4a4 4 0 0 1-8 0z" /><path d="M6 4H3.5v2A2.5 2.5 0 0 0 6 8.5M14 4h2.5v2A2.5 2.5 0 0 1 14 8.5M10 11v3M7 17h6M8 14h4v3H8z" /></svg>;
+  if (name === 'jobs') return <svg {...common}><path d="M3.5 5.5h13M3.5 10h13M3.5 14.5h8" /><circle cx="15" cy="14.5" r="2" /></svg>;
   return <svg {...common}><path d="m7.5 6-4 4 4 4M12.5 6l4 4-4 4" /></svg>;
 }
 
@@ -146,7 +149,10 @@ export default function App() {
             <ArenaPanel notify={notify} />
           </section>
           <section className={`studio-layout ${tab === 'studio' ? '' : 'layout-hidden'}`}>
-            <StudioPanel notify={notify} studioSeed={studioSeed} />
+            <StudioPanel notify={notify} studioSeed={studioSeed} onJobsSubmitted={() => setTab('jobs')} />
+          </section>
+          <section className={`jobs-layout ${tab === 'jobs' ? '' : 'layout-hidden'}`}>
+            <BacktestJobsPanel notify={notify} />
           </section>
           <section className={`data-layout ${tab === 'data' ? '' : 'layout-hidden'}`}>
             <DataManagePanel notify={notify} />

@@ -191,4 +191,13 @@ export const api = {
   saveLlmSettings: (payload) => request('/api/settings/llm', { method: 'PUT', body: payload }),
   testLlmSettings: (payload) => request('/api/settings/llm/test', { method: 'POST', body: payload, timeout: 180000 }),
   resetLlmSettings: () => request('/api/settings/llm', { method: 'DELETE' }),
+
+  // ---- 后台回测与回测记录(提交即返回 job_id,结果异步查询)----
+  submitBacktestJob: (payload) => request('/api/backtests', { method: 'POST', body: payload }),
+  backtestJobs: (status) => request(
+    `/api/backtests${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+    { method: 'GET' },
+  ),
+  getBacktestJob: (jid) => request(`/api/backtests/${encodeURIComponent(jid)}`, { method: 'GET' }),
+  cancelBacktestJob: (jid) => request(`/api/backtests/${encodeURIComponent(jid)}/cancel`, { method: 'POST' }),
 };

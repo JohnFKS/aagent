@@ -104,7 +104,7 @@ function fmtTs(ts) {
   }
 }
 
-export default function StudioPanel({ notify, studioSeed }) {
+export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
   // ---- 编辑器与草稿 ----
   // 首次进入:恢复上次编辑草稿;无草稿时载入默认模板(双均线,最直观)
   const [code, setCode] = useState(() => {
@@ -267,6 +267,61 @@ export default function StudioPanel({ notify, studioSeed }) {
     return Object.keys(sim).length > 0 ? { sys_simulation: sim } : null;
   }
 
+  // ---- 输入预检 → 回测 payload(同步分析 / 后台回测共用;格式错误就地拦截)----
+  function buildPayload() {
+    if (!code.trim()) {
+      setError('请先编写或载入策略代码(可从模板下拉起步)。');
+      return null;
+    }
+    if (!start || !end) {
+      setError('请选择回测起始与结束日期。');
+      return null;
+    }
+    if (start > end) {
+      setError('起始日期不能晚于结束日期。');
+      return null;
+    }
+    const cashNum = Number(cash);
+    if (!Number.isFinite(cashNum) || cashNum <= 0) {
+      setError('初始资金应为正数(默认 1000000)。');
+      return null;
+    }
+    if (slippage.trim() !== '' && !Number.isFinite(Number(slippage))) {
+      setError('滑点应为数字(如 0.003);留空使用平台默认 0.002。');
+      return null;
+    }
+    if (volumePercent.trim() !== '' && !Number.isFinite(Number(volumePercent))) {
+      setError('成交量占比应为数字(如 0.1);留空使用平台默认。');
+      return null;
+    }
+    const benchmarkNorm = normalizeBenchmark(benchmark);
+    if (benchmark.trim() !== '' && benchmarkNorm === undefined) {
+      setError('基准代码格式应为 6 位数字 + 交易所后缀(如 000300.XSHG),或填 none 表示不设基准;留空用平台默认上证指数。');
+      return null;
+    }
+    const overrides = buildOverrides();
+    const payload = { code, start, end, cash: cashNum };
+    if (benchmarkNorm !== undefined) payload.benchmark = benchmarkNorm;
+    if (overrides) payload.overrides = overrides;
+    return payload;
+  }
+
+  // ---- 后台回测:提交即返回,不阻塞页面;进度/结果到「回测记录」查看 ----
+  async function submitBackground() {
+    if (busy) return;
+    const payload = buildPayload();
+    if (!payload) return;
+    setError('');
+    try {
+      const data = await api.submitBacktestJob(payload);
+      notify('success', `后台回测已提交(job_id: ${data?.job_id || '—'}),到「回测记录」查看进度与结果。`);
+      if (typeof onJobsSubmitted === 'function') onJobsSubmitted();
+    } catch (e) {
+      setError(`后台回测提交失败:${e.message}`);
+      notify('error', `后台回测提交失败:${e.message}`);
+    }
+  }
+
   // ---- 采用 AI 优化最优版本:写入编辑器(草稿自动同步)----
   function adoptBest(nextCode) {
     if (typeof nextCode !== 'string' || !nextCode.trim()) return;
@@ -308,32 +363,9 @@ export default function StudioPanel({ notify, studioSeed }) {
       setError('AI 自动优化进行中,请等待其完成后再执行所选分析。');
       return;
     }
-    // 前端预检(与后端校验互补:格式类错误就地拦截)
-    if (!code.trim()) {
-      setError('请先编写或载入策略代码(可从模板下拉起步)。');
-      return;
-    }
-    if (!start || !end) {
-      setError('请选择回测起始与结束日期。');
-      return;
-    }
-    if (start > end) {
-      setError('起始日期不能晚于结束日期。');
-      return;
-    }
-    const cashNum = Number(cash);
-    if (!Number.isFinite(cashNum) || cashNum <= 0) {
-      setError('初始资金应为正数(默认 1000000)。');
-      return;
-    }
-    if (slippage.trim() !== '' && !Number.isFinite(Number(slippage))) {
-      setError('滑点应为数字(如 0.003);留空使用平台默认 0.002。');
-      return;
-    }
-    if (volumePercent.trim() !== '' && !Number.isFinite(Number(volumePercent))) {
-      setError('成交量占比应为数字(如 0.1);留空使用平台默认。');
-      return;
-    }
+    // 前端预检(与后端校验互补:格式类错误就地拦截),与后台回测共用
+    const payload = buildPayload();
+    if (!payload) return;
 
     setError('');
     setBtRes(null);
@@ -341,17 +373,6 @@ export default function StudioPanel({ notify, studioSeed }) {
     setVerifyFail(null);
     setKlineCandles(null);
     setKlineError('');
-
-    const benchmarkNorm = normalizeBenchmark(benchmark);
-    if (benchmark.trim() !== '' && benchmarkNorm === undefined) {
-      setError('基准代码格式应为 6 位数字 + 交易所后缀(如 000300.XSHG,指数可选 000001.XSHG/000399.XSHE),或填 none 表示不设基准;留空用平台默认上证指数。');
-      return;
-    }
-
-    const overrides = buildOverrides();
-    const payload = { code, start, end, cash: cashNum };
-    if (benchmarkNorm !== undefined) payload.benchmark = benchmarkNorm;
-    if (overrides) payload.overrides = overrides;
 
     // 1) 基础回测(必选)
     let blocked = false;
@@ -800,8 +821,17 @@ export default function StudioPanel({ notify, studioSeed }) {
               '执行所选分析'
             )}
           </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={submitBackground}
+            disabled={busy}
+            title="提交到后台执行,不阻塞页面;进度与结果在「回测记录」查看,可随时终止"
+          >
+            后台回测
+          </button>
           <span className="studio-submit-hint">
-            Ctrl / Cmd + Enter 快捷执行;超时上限:回测 120 秒 / 分层验证 300 秒
+            Ctrl / Cmd + Enter 快捷执行;后台回测提交后到「回测记录」查看,可随时终止
           </span>
         </div>
 

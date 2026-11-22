@@ -1,10 +1,8 @@
-// 每日持仓&收益面板(聚宽「持仓&收益」同构):
-// 按交易日分组,每组展示 逐持仓行(品种/多空/数量/可用数量/收盘价/市值/盈亏)
-// + Cash 行(现金)+ 总共行(总资产 + 当日盈亏);倒序(最近一天在前)。
-// 数据来自回测响应的 daily_holdings([{date, positions, cash, total_value,
-// market_value, daily_pnl, daily_returns}]),缺失/空时不渲染。
-// 表格内滚动 + 表头悬浮(sticky),数据多时列名始终可见。
+// 每日持仓&收益面板:按日期区间筛选,支持从近到远 / 从远到近。
+// 数据来自 daily_holdings([{date, positions, cash, total_value, market_value,
+// daily_pnl, daily_returns}]),表格内滚动 + 表头悬浮。
 import { useMemo, useState } from 'react';
+import DateRangeFilter from './DateRangeFilter.jsx';
 
 const NUM = (v, digits = 2) =>
   Number(v).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -56,21 +54,12 @@ function DayGroup({ day }) {
               </tr>
             ))}
             <tr className="dh-cash">
-              <td className="dh-name">Cash</td>
-              <td>—</td>
-              <td className="num">—</td>
-              <td className="num">—</td>
-              <td className="num">—</td>
-              <td className="num">{NUM(day.cash)}</td>
-              <td className="num">0.00</td>
+              <td className="dh-name">Cash</td><td>—</td><td className="num">—</td><td className="num">—</td>
+              <td className="num">—</td><td className="num">{NUM(day.cash)}</td><td className="num">0.00</td>
             </tr>
             <tr className="dh-total">
-              <td className="dh-name">总共</td>
-              <td>—</td>
-              <td className="num">—</td>
-              <td className="num">—</td>
-              <td className="num">—</td>
-              <td className="num">{NUM(day.total_value)}</td>
+              <td className="dh-name">总共</td><td>—</td><td className="num">—</td><td className="num">—</td>
+              <td className="num">—</td><td className="num">{NUM(day.total_value)}</td>
               <td className={`num ${pnlCls(totalPnl)}`}>{totalPnl >= 0 ? '+' : ''}{NUM(totalPnl)}</td>
             </tr>
           </tbody>
@@ -81,38 +70,62 @@ function DayGroup({ day }) {
 }
 
 export default function DailyHoldingsPanel({ dailyHoldings, defaultOpen = false }) {
-  const days = useMemo(
-    () => (Array.isArray(dailyHoldings) ? [...dailyHoldings].reverse() : []),
+  const [open, setOpen] = useState(defaultOpen);
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
+  const [order, setOrder] = useState('desc');
+  const [limit, setLimit] = useState(10);
+
+  const allDays = useMemo(
+    () => (Array.isArray(dailyHoldings) ? dailyHoldings.filter((d) => d && d.date) : []),
     [dailyHoldings],
   );
-  const [open, setOpen] = useState(defaultOpen);
-  const [limit, setLimit] = useState(10); // 倒序分页:先展示最近 10 天,按需加载更早
+  const days = useMemo(() => {
+    const direction = order === 'asc' ? 1 : -1;
+    return allDays
+      .filter((d) => {
+        const day = String(d.date).slice(0, 10);
+        if (start && day < start) return false;
+        if (end && day > end) return false;
+        return true;
+      })
+      .sort((a, b) => direction * String(a.date).localeCompare(String(b.date)));
+  }, [allDays, start, end, order]);
 
-  if (!days.length) return null;
+  const changeStart = (v) => { setStart(v); setLimit(10); };
+  const changeEnd = (v) => { setEnd(v); setLimit(10); };
+  const changeOrder = (v) => { setOrder(v); setLimit(10); };
+  const reset = () => { setStart(''); setEnd(''); setOrder('desc'); setLimit(10); };
+
+  if (!allDays.length) return null;
 
   return (
-    <details
-      className="dh-wrap"
-      open={open}
-      onToggle={(e) => setOpen(e.target.open)}
-    >
+    <details className="dh-wrap" open={open} onToggle={(e) => setOpen(e.target.open)}>
       <summary className="dh-summary">
         持仓&amp;收益(每日)
-        <span className="dh-meta mono">{days.length} 个交易日{days.length > limit && open ? '(显示最近 ' + limit + ' 天)' : ''}</span>
+        <span className="dh-meta mono">
+          {days.length === allDays.length
+            ? `${days.length} 个交易日(${order === 'asc' ? '从远到近' : '从近到远'})`
+            : `筛选 ${days.length}/${allDays.length} 天`}
+        </span>
       </summary>
       {open && (
         <>
-          {days.slice(0, limit).map((day) => (
-            <DayGroup key={day.date} day={day} />
-          ))}
+          <DateRangeFilter
+            start={start} end={end} order={order}
+            onStartChange={changeStart} onEndChange={changeEnd} onOrderChange={changeOrder}
+            onReset={reset} total={allDays.length} shown={days.length} unit="天"
+          />
+          {days.slice(0, limit).map((day) => <DayGroup key={day.date} day={day} />)}
+          {!days.length && <div className="range-filter-empty">该日期区间内没有持仓记录</div>}
           {days.length > limit && (
             <button type="button" className="dh-more" onClick={() => setLimit((l) => l + 20)}>
-              加载更早 {Math.min(20, days.length - limit)} 天(剩余 {days.length - limit})
+              加载{order === 'asc' ? '更晚' : '更早'} {Math.min(20, days.length - limit)} 天(剩余 {days.length - limit})
             </button>
           )}
         </>
       )}
-      {!open && <div className="dh-collapsed-hint">点击展开每日持仓明细(品种/数量/可用/收盘价/市值/盈亏 + 当日盈亏)</div>}
+      {!open && <div className="dh-collapsed-hint">点击展开每日持仓明细(可筛选日期与排序)</div>}
     </details>
   );
 }

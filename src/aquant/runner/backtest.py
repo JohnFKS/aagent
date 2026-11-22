@@ -19,6 +19,7 @@ import pickle
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +49,10 @@ class BacktestExecutionError(RuntimeError):
     def __init__(self, returncode: int, stderr_tail: str) -> None:
         super().__init__(f"回测执行失败(exit={returncode}):\n{stderr_tail}")
         self.returncode = returncode
+
+
+class BacktestCancelled(RuntimeError):
+    """用户主动终止回测(后台任务取消)。"""
 
 
 @dataclass
@@ -84,6 +89,7 @@ def run_backtest(
     mod_overrides: dict | None = None,
     strategy_name: str = "platform_strategy",
     timeout: int = 600,
+    cancel_event: threading.Event | None = None,
 ) -> BacktestResult:
     """校验并执行一次日线回测。
 
@@ -133,21 +139,39 @@ def run_backtest(
         cfg_file = tmp_dir / "config.json"
         cfg_file.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
 
-        proc = subprocess.run(
-            [sys.executable, "-m", "aquant.runner._worker", str(strategy_file), str(cfg_file)],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        cmd = [sys.executable, "-m", "aquant.runner._worker", str(strategy_file), str(cfg_file)]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + timeout
+            while proc.poll() is None:
+                if cancel_event is not None and cancel_event.is_set():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    raise BacktestCancelled("用户终止了回测")
+                if time.monotonic() >= deadline:
+                    proc.kill()
+                    proc.wait()
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                time.sleep(0.05)
+            stdout, stderr = proc.communicate()
+        except BaseException:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            raise
         if proc.returncode != 0 or not result_file.exists():
-            stderr_tail = "\n".join((proc.stderr or "").strip().splitlines()[-25:])
+            stderr_tail = "\n".join((stderr or "").strip().splitlines()[-25:])
             raise BacktestExecutionError(proc.returncode, stderr_tail)
 
         with open(result_file, "rb") as f:
             raw = pickle.load(f)
 
         daily_holdings = []
-        for line in (proc.stdout or "").splitlines():
+        for line in (stdout or "").splitlines():
             if line.startswith(_worker.RUN_META_SENTINEL):
                 try:
                     meta = json.loads(line[len(_worker.RUN_META_SENTINEL):])

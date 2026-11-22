@@ -47,6 +47,7 @@ app.include_router(data_admin_router)
 # (llm: LLMClient;runner: agents.backtest_agent.Runner)
 app.state.llm = None
 app.state.runner = None
+app.state.backtest_jobs = None
 
 BUNDLE_GUIDANCE = (
     "回测数据 bundle 不存在,无法执行真实回测。"
@@ -345,6 +346,96 @@ def backtest(req: BacktestRequest, request: Request) -> dict[str, Any]:
         "benchmark": benchmark,
         "benchmark_label": _benchmark_label_of(benchmark),
     }
+
+
+# ---------------------------------------------------------------------------
+# 后台回测任务:提交后立即返回 job_id,可查询进度/结果、可终止运行中任务。
+# ---------------------------------------------------------------------------
+def _get_backtest_jobs(request: Request):
+    if getattr(request.app.state, "backtest_jobs", None) is None:
+        from aquant.runner.backtest_jobs import BacktestJobManager
+
+        request.app.state.backtest_jobs = BacktestJobManager()
+    return request.app.state.backtest_jobs
+
+
+def _run_backtest_job(payload: dict[str, Any], cancel_event):
+    from aquant.runner.backtest import run_backtest
+
+    benchmark = _resolve_benchmark(payload.get("benchmark"))
+    kw: dict[str, Any] = {}
+    if payload.get("overrides"):
+        kw["mod_overrides"] = payload["overrides"]
+    if payload.get("cash") is not None:
+        kw["cash"] = payload["cash"]
+    if benchmark:
+        kw["benchmark"] = benchmark
+    return run_backtest(
+        payload["code"], payload["start"], payload["end"],
+        strategy_name=payload.get("strategy_name") or "platform_strategy",
+        cancel_event=cancel_event,
+        **kw,
+    )
+
+
+def _job_result_payload(result: Any, request_payload: dict[str, Any]) -> dict[str, Any]:
+    from aquant.agents.orchestrator import (
+        _extract_benchmark_series,
+        _extract_daily_holdings,
+        _extract_portfolio_series,
+        _extract_run_log,
+        _extract_trades,
+    )
+
+    verdict = getattr(result, "verdict", None)
+    trades = _extract_trades(result)
+    benchmark = request_payload.get("benchmark")
+    return {
+        "passed": True,
+        "verdict": verdict.to_dict() if hasattr(verdict, "to_dict") else verdict,
+        "metrics": getattr(result, "summary", {}) if not isinstance(result, dict) else result.get("summary", {}),
+        "trades_count": len(trades) if hasattr(trades, "__len__") else 0,
+        "portfolio_series": _extract_portfolio_series(result),
+        "benchmark_series": _extract_benchmark_series(result),
+        "trades": trades,
+        "run_log": _extract_run_log(result, max_lines=2000),
+        "daily_holdings": _extract_daily_holdings(result, max_days=1000),
+        "bundle_extension": getattr(result, "bundle_extension", None),
+        "benchmark": benchmark,
+        "benchmark_label": _benchmark_label_of(benchmark),
+    }
+
+
+@app.post("/api/backtests", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def submit_backtest_job(req: BacktestRequest, request: Request) -> dict[str, Any]:
+    """提交后台回测任务,立即返回 job_id;结果通过 /api/backtests/{id} 查询。"""
+    job = _get_backtest_jobs(request).submit(req.model_dump(), _run_backtest_job)
+    return {"job_id": job.id, "status": job.status, "created_at": job.created_at}
+
+
+@app.get("/api/backtests", dependencies=[Depends(require_mcp_token(scope="readonly"))])
+def list_backtest_jobs(request: Request, status: str | None = None) -> dict[str, Any]:
+    """回测记录:默认全部,可用 status=running/completed/failed/cancelled 过滤。"""
+    jobs = _get_backtest_jobs(request).list(status)
+    return {"jobs": [j.summary() for j in jobs], "count": len(jobs)}
+
+
+@app.get("/api/backtests/{jid}", dependencies=[Depends(require_mcp_token(scope="readonly"))])
+def get_backtest_job(jid: str, request: Request) -> dict[str, Any]:
+    job = _get_backtest_jobs(request).get(jid)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"回测任务不存在:{jid}")
+    detail = job.detail()
+    if job.status == "completed" and job.result is not None:
+        detail["result"] = _job_result_payload(job.result, job.request)
+    return detail
+
+
+@app.post("/api/backtests/{jid}/cancel", dependencies=[Depends(require_mcp_token(scope="readwrite"))])
+def cancel_backtest_job(jid: str, request: Request) -> dict[str, Any]:
+    """终止运行中的后台回测;已结束的任务返回 ok=false。"""
+    ok = _get_backtest_jobs(request).cancel(jid)
+    return {"ok": ok, "id": jid}
 
 
 def _register_runner_exception_handler() -> None:
