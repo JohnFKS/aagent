@@ -238,3 +238,29 @@ class TestRunBacktestCancellation:
                 GOOD_CODE, START, END, bundle_path=bundle, timeout=0
             )
         assert fake.killed is True
+
+    def test_stdout_uses_file_not_pipe(self, monkeypatch, tmp_path):
+        """回归:stdout/stderr 不能是 PIPE,否则 worker 日志量大时会 pipe_write 阻塞。"""
+        from aquant.runner import backtest as bt_mod
+        from stubs import GOOD_CODE
+
+        captured = {}
+
+        def fake_popen(cmd, stdout=None, stderr=None, **kwargs):
+            captured["stdout"] = stdout
+            captured["stderr"] = stderr
+            fake = _FakeProc()
+            fake.returncode = 0  # 直接成功退出,避免等待
+            return fake
+
+        monkeypatch.setattr(bt_mod.subprocess, "Popen", fake_popen)
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+
+        # 无 result.pkl 会抛 BacktestExecutionError,但我们只关心 Popen 参数
+        with pytest.raises(Exception):
+            bt_mod.run_backtest(GOOD_CODE, START, END, bundle_path=bundle)
+        assert captured.get("stdout") is not subprocess.PIPE
+        assert captured.get("stderr") is not subprocess.PIPE
+        assert captured.get("stdout") is not None
+        assert captured.get("stderr") is not None

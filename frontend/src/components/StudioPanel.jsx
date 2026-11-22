@@ -12,7 +12,7 @@
 // - 分析方式自选(至少一项):基础回测(必选)/ 分层验证(/api/verify)/ K 线行情;
 // - 提交按勾选项顺序执行,loading 分步展示;422 拦截条 + findings、400 bundle 指引、
 //   超时友好提示。顶部说明条强调:所有回测仍经四层校验(保守参数强制)。
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { STUDIO_TEMPLATES, DEFAULT_START, DEFAULT_END } from '../samples.js';
 import CodeEditor from './CodeEditor.jsx';
@@ -162,6 +162,10 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
   // ---- 执行状态 ----
   const [phase, setPhase] = useState(''); // '' | 'basic' | 'verify' | 'kline'
   const [error, setError] = useState(''); // 网络 / HTTP 层错误条
+  // 基础回测后台任务:job_id 用于「终止回测」;轮询期间由 ref 承载最新 id(规避闭包陈旧)
+  const [activeJobId, setActiveJobId] = useState('');
+  const [cancelling, setCancelling] = useState(false);
+  const activeJobRef = useRef('');
   // AI 优化进行中(OptimizePanel 反向通知):与主分析双向互斥,避免两个长任务并发
   const [optBusy, setOptBusy] = useState(false);
 
@@ -322,6 +326,57 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
     }
   }
 
+  // ---- 基础回测(走后台任务,运行中可终止)----
+  // 提交后台回测 → 每 800ms 轮询详情 → 完成/失败/取消后返回 {status, detail}。
+  // 轮询以 ref 中的 job_id 为准,终止按钮只设置取消信号,由后端置 status=cancelled。
+  const POLL_INTERVAL = 800;
+  const POLL_TIMEOUT = 15 * 60 * 1000; // 15 分钟兜底,留足真实回测 + bundle 自动扩展时间
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function pollBasicJob(jid) {
+    const deadline = Date.now() + POLL_TIMEOUT;
+    while (Date.now() < deadline) {
+      if (activeJobRef.current !== jid) {
+        // 用户已清空 / 重新开始,放弃本次轮询
+        return { status: 'aborted', detail: null };
+      }
+      let detail;
+      try {
+        detail = await api.getBacktestJob(jid);
+      } catch (e) {
+        // 网络抖动不立即失败,下轮重试(后端任务仍在跑)
+        await sleep(POLL_INTERVAL);
+        continue;
+      }
+      if (detail.status === 'completed') return { status: 'completed', detail };
+      if (detail.status === 'cancelled') return { status: 'cancelled', detail };
+      if (detail.status === 'failed') return { status: 'failed', detail };
+      await sleep(POLL_INTERVAL);
+    }
+    return { status: 'timeout', detail: null };
+  }
+
+  async function cancelActiveJob() {
+    const jid = activeJobRef.current;
+    if (!jid || cancelling) return;
+    setCancelling(true);
+    try {
+      const data = await api.cancelBacktestJob(jid);
+      if (data?.ok) {
+        notify('info', `终止信号已发送给基础回测(${jid}),即将停止。`);
+      } else {
+        notify('warn', '该回测已结束或无需终止。');
+      }
+    } catch (e) {
+      notify('error', `终止回测失败:${e.message}`);
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   // ---- 采用 AI 优化最优版本:写入编辑器(草稿自动同步)----
   function adoptBest(nextCode) {
     if (typeof nextCode !== 'string' || !nextCode.trim()) return;
@@ -374,33 +429,64 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
     setKlineCandles(null);
     setKlineError('');
 
-    // 1) 基础回测(必选)
+    // 1) 基础回测(必选)——提交后台任务并轮询,运行中可「终止回测」
     let blocked = false;
     setPhase('basic');
     try {
-      const data = await api.backtest(payload);
-      setBtRes({ kind: 'ok', data: data || {} });
-      notify(
-        'success',
-        `基础回测完成${data?.trades_count != null ? `,成交 ${data.trades_count} 笔` : ''}。`,
-      );
-    if (data?.bundle_extension?.extended) {
-      const ext = data.bundle_extension;
-      notify(
-        'info',
-        `数据 bundle 已自动更新:${ext.prior.end} → ${ext.now.end}(拉取最新行情,旧数据已清理)。`,
-      );
-    }
-    } catch (e) {
-      if (e.data && e.data.verdict) {
-        // 422:运行时校验拦截,错误体带 verdict → 拦截条 + findings
-        setBtRes({ kind: 'rejected', detail: e.message, verdict: e.data.verdict });
-        notify('warn', '基础回测被校验拦截(422),已跳过后续分析。');
-      } else {
-        setBtRes({ kind: 'error', detail: e.message, status: e.status });
-        notify('error', e.message);
+      const submitted = await api.submitBacktestJob(payload);
+      const jid = submitted?.job_id;
+      if (!jid) throw new Error('后端未返回 job_id,无法跟踪基础回测。');
+      activeJobRef.current = jid;
+      setActiveJobId(jid);
+      setCancelling(false);
+
+      const outcome = await pollBasicJob(jid);
+      activeJobRef.current = '';
+      setActiveJobId('');
+
+      if (outcome.status === 'aborted') {
+        // 用户清空 / 重新开始:静默退出,不写结果
+        setPhase('');
+        return;
       }
-      blocked = true; // 校验拦截 / bundle 缺失 / 网络故障:后续分析无意义,短路
+      if (outcome.status === 'cancelled') {
+        setBtRes({ kind: 'cancelled', detail: '基础回测已被用户终止。' });
+        notify('warn', '基础回测已终止,已跳过后续分析。');
+        blocked = true;
+      } else if (outcome.status === 'failed') {
+        const detail = outcome.detail || {};
+        const verdict = detail.error_verdict;
+        if (verdict) {
+          setBtRes({ kind: 'rejected', detail: detail.error || '策略校验未通过', verdict });
+          notify('warn', '基础回测被校验拦截,已跳过后续分析。');
+        } else {
+          setBtRes({ kind: 'error', detail: detail.error || '回测执行失败' });
+          notify('error', detail.error || '回测执行失败');
+        }
+        blocked = true;
+      } else if (outcome.status === 'timeout') {
+        setBtRes({ kind: 'error', detail: '基础回测超过 15 分钟仍未结束,请到「回测记录」查看。' });
+        notify('error', '基础回测超时,请到「回测记录」查看进度。');
+        blocked = true;
+      } else {
+        // completed:result 已是 /api/backtest 同构 payload
+        const data = outcome.detail?.result || {};
+        setBtRes({ kind: 'ok', data });
+        notify(
+          'success',
+          `基础回测完成${data?.trades_count != null ? `,成交 ${data.trades_count} 笔` : ''}。`,
+        );
+        if (data?.bundle_extension?.extended) {
+          const ext = data.bundle_extension;
+          notify('info', `数据 bundle 已自动更新:${ext.prior.end} → ${ext.now.end}(拉取最新行情,旧数据已清理)。`);
+        }
+      }
+    } catch (e) {
+      activeJobRef.current = '';
+      setActiveJobId('');
+      setBtRes({ kind: 'error', detail: e.message, status: e.status });
+      notify('error', e.message);
+      blocked = true; // 提交失败 / 网络故障:后续分析无意义,短路
     }
 
     // 2) 分层验证(可选;两次回测,较慢)
@@ -448,7 +534,7 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
   function phaseLabel() {
     switch (phase) {
       case 'basic':
-        return '回测中…';
+        return activeJobId ? '回测中…(可终止)' : '回测中…';
       case 'verify':
         return '分层验证中…(较慢)';
       case 'kline':
@@ -540,7 +626,7 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
 
         {/* 顶部说明条 */}
         <div className="studio-note">
-          策略工坊 = 手动模式:自己写代码,自己选回测与分析;所有回测仍经四层校验(保守参数强制)。
+          策略工坊 = 手动模式:自己写代码,自己选回测与分析;所有回测仍经四层校验(保守参数强制)。基础回测运行中可随时点「终止回测」。
         </div>
 
         {/* 编辑器工具行:模板下拉 + 策略名 + 保存 */}
@@ -821,6 +907,17 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
               '执行所选分析'
             )}
           </button>
+          {phase === 'basic' && activeJobId && (
+            <button
+              type="button"
+              className="btn btn-ghost studio-cancel-btn"
+              onClick={cancelActiveJob}
+              disabled={cancelling}
+              title="终止正在运行的基础回测(停止后台回测子进程)"
+            >
+              {cancelling ? '终止中…' : '终止回测'}
+            </button>
+          )}
           <button
             type="button"
             className="btn btn-ghost"
@@ -831,7 +928,7 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
             后台回测
           </button>
           <span className="studio-submit-hint">
-            Ctrl / Cmd + Enter 快捷执行;后台回测提交后到「回测记录」查看,可随时终止
+            Ctrl / Cmd + Enter 快捷执行;基础回测运行中可点「终止回测」;后台回测到「回测记录」查看
           </span>
         </div>
 
@@ -959,6 +1056,16 @@ export default function StudioPanel({ notify, studioSeed, onJobsSubmitted }) {
               <span>基础回测被运行时校验拦截:{btRes.detail}</span>
             </div>
             <FindingsList findings={btRes.verdict?.findings} emptyText="无发现。" />
+          </section>
+        )}
+
+        {/* 基础回测:用户终止 */}
+        {btRes?.kind === 'cancelled' && (
+          <section className="backtest-result">
+            <div className="warn-bar" role="alert">
+              <span className="bar-icon">⨯</span>
+              <span>{btRes.detail}</span>
+            </div>
           </section>
         )}
 

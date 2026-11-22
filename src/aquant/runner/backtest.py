@@ -140,29 +140,35 @@ def run_backtest(
         cfg_file.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
 
         cmd = [sys.executable, "-m", "aquant.runner._worker", str(strategy_file), str(cfg_file)]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try:
-            deadline = time.monotonic() + timeout
-            while proc.poll() is None:
-                if cancel_event is not None and cancel_event.is_set():
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
+        # stdout/stderr 写临时文件而非 PIPE:轮询期间不读管道,worker 日志量大时
+        # 管道缓冲区满会令其阻塞在 pipe_write(表现为回测永不结束)。临时文件无此问题。
+        stdout_file = tmp_dir / "worker_stdout.txt"
+        stderr_file = tmp_dir / "worker_stderr.txt"
+        with open(stdout_file, "wb") as out_f, open(stderr_file, "wb") as err_f:
+            proc = subprocess.Popen(cmd, stdout=out_f, stderr=err_f)
+            try:
+                deadline = time.monotonic() + timeout
+                while proc.poll() is None:
+                    if cancel_event is not None and cancel_event.is_set():
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        raise BacktestCancelled("用户终止了回测")
+                    if time.monotonic() >= deadline:
                         proc.kill()
                         proc.wait()
-                    raise BacktestCancelled("用户终止了回测")
-                if time.monotonic() >= deadline:
+                        raise subprocess.TimeoutExpired(cmd, timeout)
+                    time.sleep(0.05)
+            except BaseException:
+                if proc.poll() is None:
                     proc.kill()
                     proc.wait()
-                    raise subprocess.TimeoutExpired(cmd, timeout)
-                time.sleep(0.05)
-            stdout, stderr = proc.communicate()
-        except BaseException:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-            raise
+                raise
+        stdout = stdout_file.read_text(encoding="utf-8", errors="replace")
+        stderr = stderr_file.read_text(encoding="utf-8", errors="replace")
         if proc.returncode != 0 or not result_file.exists():
             stderr_tail = "\n".join((stderr or "").strip().splitlines()[-25:])
             raise BacktestExecutionError(proc.returncode, stderr_tail)

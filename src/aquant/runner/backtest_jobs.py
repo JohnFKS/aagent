@@ -30,6 +30,8 @@ class BacktestJob:
     result: Any = None
     error: str | None = None
     error_kind: str | None = None
+    # 校验拦截时附带 verdict dict,供前端展示 findings(与同步 /api/backtest 对齐)
+    error_verdict: Any = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = field(default=None, repr=False)
 
@@ -54,7 +56,12 @@ class BacktestJob:
         }
 
     def detail(self) -> dict[str, Any]:
-        return {**self.summary(), "request": self.request, "result": self.result}
+        return {
+            **self.summary(),
+            "request": self.request,
+            "result": self.result,
+            "error_verdict": self.error_verdict,
+        }
 
 
 class BacktestJobManager:
@@ -78,6 +85,11 @@ class BacktestJobManager:
             except Exception as exc:
                 job.error = str(exc)
                 job.error_kind = type(exc).__name__
+                verdict = getattr(exc, "verdict", None)
+                if verdict is not None:
+                    job.error_verdict = (
+                        verdict.to_dict() if hasattr(verdict, "to_dict") else verdict
+                    )
                 job.status = "cancelled" if job.error_kind == "BacktestCancelled" else "failed"
             finally:
                 job.finished_at = _now()
